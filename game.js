@@ -237,7 +237,7 @@ for (const wall of walls) {
   });
 }
 
-// Stops the player from walking through walls
+// Stops players and bots from walking through walls
 function pushOutOfWalls(pos) {
   const r = 0.6;
   for (const b of wallBoxes) {
@@ -262,6 +262,26 @@ function insideWall(p) {
   }
   return false;
 }
+
+// True if nothing is blocking the line between two spots (used by bots to "see")
+function hasLineOfSight(a, b) {
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  const steps = Math.ceil(Math.hypot(dx, dz));
+  const p = new THREE.Vector3(0, 1.5, 0);
+  for (let i = 1; i < steps; i++) {
+    p.x = a.x + (dx * i) / steps;
+    p.z = a.z + (dz * i) / steps;
+    if (insideWall(p)) return false;
+  }
+  return true;
+}
+
+// Places where players and bots can spawn (all clear of walls)
+const SPAWNS = [
+  [-15, -35], [15, -35], [-15, 35], [15, 35], [0, -30],
+  [0, 30], [-6, -12], [6, 12], [-6, 12], [6, -12],
+];
 
 // ================= CHARACTERS =================
 // Change these numbers to balance him. More teachers get added here later.
@@ -288,7 +308,7 @@ const characters = {
     shieldBlock: 0.85, // blocks 85% of damage
     shieldSpeed: 0.6, // move at 60% speed while the shield is up
     // V: ban hammer (one shot kill)
-    meleeCooldown: 1500,
+    meleeCooldown: 30000, // 30 seconds
     meleeRange: 4.5,
     // X: ultimate "Balding"
     ultCost: 100, // charge needed
@@ -311,6 +331,22 @@ const ULT_BEAM_DELAY = 900; // ms between beams
 const BEAM_HIT_RADIUS = 1.4;
 const BEAM_LIFE = 45; // frames a beam stays visible
 const PHONE_VIEW = { x: 0.38, y: -0.36, z: -0.8 }; // where the phone sits in first person
+
+// ----- BOT SETTINGS (change these to make bots easier or harder) -----
+const BOT_COUNT = 5;
+const BOT_HEALTH = 150;
+const BOT_SPEED = 5.5; // units per second (you move about 9)
+const BOT_AIM_ERROR = 0.1; // random aim miss in radians: bigger = worse aim
+const BOT_REACTION = 0.5; // seconds a bot waits after spotting someone before shooting
+const BOT_SHOTS = 3; // shots per burst
+const BOT_SHOT_GAP = 0.12; // seconds between shots in a burst
+const BOT_BURST_DELAY = 1.5; // seconds between bursts (a little random is added)
+const BOT_DAMAGE = 8; // damage per bot shot
+const BOT_BULLET_SPEED = 0.45; // you can dodge these
+const BOT_VIEW = 45; // how far bots can see
+const BOT_RESPAWN = 4; // seconds
+const BOT_NAMES = ["Bot Alpha", "Bot Bravo", "Bot Charlie", "Bot Delta", "Bot Echo"];
+const BOT_COLORS = [0xe74c3c, 0x3498db, 0xf39c12, 0x1abc9c, 0xe91e63];
 
 // ================= STATE =================
 let playing = false;
@@ -341,6 +377,8 @@ let throwAnim = 0;
 let shake = 0;
 let dashFxLevel = 0;
 let dashFrames = 0;
+let kills = 0;
+let deaths = 0;
 
 // ================= PLAYER LOOK (picture + camera mode) =================
 const BODY_HEIGHT = 2.2; // height of the cutout picture
@@ -506,6 +544,33 @@ abilityHud.style.cssText =
   "position:fixed;bottom:55px;left:20px;color:#fff;font:bold 16px sans-serif;text-shadow:1px 1px 2px #000;line-height:22px;";
 document.body.appendChild(abilityHud);
 
+// Kills / deaths (top left)
+const statsHud = document.createElement("div");
+statsHud.style.cssText =
+  "position:fixed;top:10px;left:16px;color:#fff;font:bold 16px sans-serif;text-shadow:1px 1px 2px #000;";
+document.body.appendChild(statsHud);
+function updateStats() {
+  statsHud.textContent = "Kills: " + kills + "   Deaths: " + deaths;
+}
+updateStats();
+
+// Kill feed (top right)
+const feed = document.createElement("div");
+feed.style.cssText =
+  "position:fixed;top:40px;right:16px;display:flex;flex-direction:column;align-items:flex-end;gap:4px;" +
+  "pointer-events:none;z-index:5;font:bold 15px sans-serif;";
+document.body.appendChild(feed);
+function addFeed(killer, victim, how) {
+  const verb = how === "banned" ? "BANNED" : how === "beam" ? "BALDED" : "eliminated";
+  const row = document.createElement("div");
+  row.style.cssText =
+    "background:rgba(0,0,0,0.6);color:#fff;padding:4px 10px;border-radius:4px;border-left:4px solid #ffd700;";
+  row.textContent = killer + " " + verb + " " + victim;
+  feed.appendChild(row);
+  setTimeout(() => row.remove(), 4500);
+  while (feed.children.length > 6) feed.firstChild.remove();
+}
+
 // Ult charge bar (bottom center)
 const ultBox = document.createElement("div");
 ultBox.style.cssText =
@@ -633,15 +698,57 @@ function cooldownText(label, key, last, cooldown) {
   return label + " (" + key + "): " + (left > 0 ? left + "s" : "READY");
 }
 
-// ================= CHARACTER SELECT SCREEN =================
-const overlay = document.createElement("div");
-overlay.style.cssText =
+// ================= MENUS =================
+const MENU_STYLE =
   "position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:10;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif;color:#fff;";
+
+// ----- Mode select screen -----
+const modeOverlay = document.createElement("div");
+modeOverlay.style.cssText = MENU_STYLE;
+modeOverlay.innerHTML = '<h1 style="margin:0 0 30px;font-size:42px;">CHOOSE A MODE</h1>';
+const modeRow = document.createElement("div");
+modeRow.style.cssText = "display:flex;gap:20px;";
+modeOverlay.appendChild(modeRow);
+document.body.appendChild(modeOverlay);
+
+function makeModeCard(title, desc, enabled, onClick) {
+  const card = document.createElement("div");
+  card.style.cssText =
+    "width:240px;padding:24px;border:3px solid " + (enabled ? "#fff" : "#555") +
+    ";border-radius:10px;background:#222;text-align:center;" +
+    (enabled ? "cursor:pointer;" : "opacity:0.4;");
+  card.innerHTML =
+    '<div style="font-size:26px;font-weight:bold;margin-bottom:12px;">' + title + "</div>" +
+    '<div style="font-size:14px;line-height:22px;">' + desc + "</div>";
+  if (enabled) {
+    card.addEventListener("mouseenter", () => (card.style.background = "#444"));
+    card.addEventListener("mouseleave", () => (card.style.background = "#222"));
+    card.addEventListener("click", onClick);
+  }
+  modeRow.appendChild(card);
+}
+
+// ----- Teacher select screen -----
+const overlay = document.createElement("div");
+overlay.style.cssText = MENU_STYLE;
+overlay.style.display = "none";
 overlay.innerHTML =
   '<h1 style="margin:0 0 30px;font-size:42px;">CHOOSE YOUR TEACHER</h1>';
 const cardRow = document.createElement("div");
 cardRow.style.cssText = "display:flex;gap:20px;";
 overlay.appendChild(cardRow);
+
+const backBtn = document.createElement("div");
+backBtn.textContent = "< Back to modes";
+backBtn.style.cssText = "margin-top:28px;font-size:16px;cursor:pointer;text-decoration:underline;opacity:0.8;";
+backBtn.addEventListener("click", () => {
+  playing = false;
+  clearBots();
+  overlay.style.display = "none";
+  modeOverlay.style.display = "flex";
+  document.exitPointerLock();
+});
+overlay.appendChild(backBtn);
 document.body.appendChild(overlay);
 
 function makeCard(html, locked) {
@@ -659,21 +766,39 @@ function makeCard(html, locked) {
 for (const key in characters) {
   const c = characters[key];
   const card = makeCard(
-    '<div style="width:80px;height:120px;margin:0 auto 12px;background:#' +
-      c.color.toString(16).padStart(6, "0") +
-      ';"></div>' +
-      '<div style="font-size:24px;font-weight:bold;margin-bottom:10px;">' + c.name + "</div>" +
+    '<div style="font-size:24px;font-weight:bold;margin-bottom:10px;">' + c.name + "</div>" +
       '<div style="font-size:14px;line-height:22px;text-align:left;">' +
       "Health: " + c.health + "<br>" +
       "Weapon: Phones (" + c.burst + " x " + c.damage + " dmg)<br>" +
       "Q: Dash<br>" +
       "E: Phone Grenade (" + c.grenadeDamage + " dmg)<br>" +
       "Right Click: Logo Shield (" + Math.round(c.shieldBlock * 100) + "% block)<br>" +
-      "V: Ban Hammer (one shot)<br>" +
+      "V: Ban Hammer (one shot, " + Math.round(c.meleeCooldown / 1000) + "s)<br>" +
       "X: ULT - Balding (" + c.ultBeams + " x " + c.ultDamage + " dmg)" +
       "</div>",
     false
   );
+
+  // Picture on top of the card (falls back to a colored box if the picture is missing)
+  const holder = document.createElement("div");
+  holder.style.cssText =
+    "height:140px;margin:0 auto 12px;display:flex;justify-content:center;align-items:center;";
+  const fallback = document.createElement("div");
+  fallback.style.cssText =
+    "width:80px;height:120px;background:#" + c.color.toString(16).padStart(6, "0") + ";";
+  holder.appendChild(fallback);
+  if (c.picture) {
+    const pic = document.createElement("img");
+    pic.style.cssText = "max-height:140px;max-width:100%;display:none;";
+    pic.onload = () => {
+      pic.style.display = "block";
+      fallback.style.display = "none";
+    };
+    pic.src = c.picture;
+    holder.appendChild(pic);
+  }
+  card.prepend(holder);
+
   card.addEventListener("mouseenter", () => (card.style.background = "#444"));
   card.addEventListener("mouseleave", () => (card.style.background = "#222"));
   card.addEventListener("click", () => selectCharacter(key));
@@ -710,20 +835,30 @@ function openSelectScreen() {
 }
 
 // ================= PLAYER DAMAGE / RESPAWN =================
-function damagePlayer(amount) {
+function damagePlayer(amount, attacker) {
   if (dead || ultPhase !== 0) return; // can't be hurt while using the ult
   if (shieldUp) amount *= 1 - current.shieldBlock; // shield blocks 85%
   playerHealth -= amount;
   if (playerHealth <= 0) {
     playerHealth = 0;
     dead = true;
+    deaths++;
+    updateStats();
     dashFrames = 0;
+    if (attacker && attacker.name) {
+      attacker.kills++;
+      addFeed(attacker.name, "You", "");
+      deathMsg.textContent = "ELIMINATED BY " + attacker.name.toUpperCase() + " - respawning...";
+    } else {
+      deathMsg.textContent = "YOU DIED - respawning...";
+    }
     showPlayerModel();
     deathMsg.style.display = "block";
     setTimeout(() => {
       playerHealth = maxHealth;
       dead = false;
-      player.position.set(0, 1, 0);
+      const s = pickSpawn();
+      player.position.set(s[0], 1, s[1]);
       showPlayerModel();
       deathMsg.style.display = "none";
       updateHealthBar();
@@ -802,41 +937,312 @@ function addUltCharge(amount) {
   ultCharge = Math.min(current.ultCost, ultCharge + amount);
 }
 
-// ================= TARGET DUMMY =================
-const DUMMY_MAX = 300;
-const dummy = new THREE.Mesh(
-  new THREE.BoxGeometry(1, 2, 1),
-  new THREE.MeshStandardMaterial({ color: 0x3366ff })
-);
-dummy.position.set(0, 1, -10);
-dummy.userData.health = DUMMY_MAX;
-scene.add(dummy);
+// ================= BOTS =================
+const bots = [];
+const enemyBullets = [];
+const enemyBulletGeo = new THREE.SphereGeometry(0.2);
 
-const dummyBar = new THREE.Mesh(
-  new THREE.BoxGeometry(1.4, 0.15, 0.05),
-  new THREE.MeshBasicMaterial({ color: 0x2ecc40 })
-);
-dummyBar.position.y = 1.6;
-dummy.add(dummyBar);
+// Picks a spawn point far away from everyone
+function pickSpawn() {
+  let best = SPAWNS[0];
+  let bestD = -1;
+  for (let k = 0; k < 6; k++) {
+    const s = SPAWNS[Math.floor(Math.random() * SPAWNS.length)];
+    let nearest = 999;
+    if (playing && !dead) {
+      nearest = Math.min(nearest, Math.hypot(s[0] - player.position.x, s[1] - player.position.z));
+    }
+    for (const b of bots) {
+      if (b.alive) {
+        nearest = Math.min(nearest, Math.hypot(s[0] - b.mesh.position.x, s[1] - b.mesh.position.z));
+      }
+    }
+    if (nearest > bestD) {
+      bestD = nearest;
+      best = s;
+    }
+  }
+  return best;
+}
 
-// how = "banned" (hammer), "beam" (ult), or nothing
-function damageDummy(amount, how) {
-  if (!dummy.visible) return;
-  const dealt = Math.min(amount, dummy.userData.health);
-  addUltCharge(dealt * current.ultPerDamage);
-  dummy.userData.health -= amount;
-  dummyBar.scale.x = Math.max(0.001, dummy.userData.health / DUMMY_MAX);
-  dummy.material.color.setHex(0xffffff);
-  setTimeout(() => dummy.material.color.setHex(0x3366ff), 80);
-  if (dummy.userData.health <= 0) {
-    dummy.visible = false;
-    addUltCharge(current.ultPerKill);
-    showKillBanner("Blue Dummy", how); // elimination banner
-    setTimeout(() => {
-      dummy.userData.health = DUMMY_MAX;
-      dummyBar.scale.x = 1;
-      dummy.visible = true;
-    }, 3000);
+// Name + health bar above a bot's head (one picture that gets redrawn)
+function makeNameTag() {
+  const c = document.createElement("canvas");
+  c.width = 256;
+  c.height = 64;
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
+  spr.scale.set(2.6, 0.65, 1);
+  return { spr, c, tex };
+}
+
+function drawTag(bot) {
+  const g = bot.tagCanvas.getContext("2d");
+  g.clearRect(0, 0, 256, 64);
+  g.font = "bold 26px sans-serif";
+  g.textAlign = "center";
+  g.textBaseline = "top";
+  g.lineWidth = 5;
+  g.strokeStyle = "#000";
+  g.strokeText(bot.name, 128, 2);
+  g.fillStyle = "#fff";
+  g.fillText(bot.name, 128, 2);
+  g.fillStyle = "#000";
+  g.fillRect(28, 38, 200, 16);
+  g.fillStyle = "#2ecc40";
+  g.fillRect(30, 40, 196 * Math.max(0, bot.health / BOT_HEALTH), 12);
+  bot.tagTex.needsUpdate = true;
+}
+
+function makeBot(i) {
+  const color = BOT_COLORS[i % BOT_COLORS.length];
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(1, 2, 1),
+    new THREE.MeshStandardMaterial({ color })
+  );
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.4, 12, 12), skinMat);
+  head.position.y = 1.4;
+  mesh.add(head);
+  const tag = makeNameTag();
+  tag.spr.position.y = 1.9;
+  mesh.add(tag.spr);
+  scene.add(mesh);
+
+  const bot = {
+    name: BOT_NAMES[i % BOT_NAMES.length],
+    color,
+    mesh,
+    tagCanvas: tag.c,
+    tagTex: tag.tex,
+    bulletMat: new THREE.MeshBasicMaterial({ color }),
+    health: BOT_HEALTH,
+    alive: false,
+    kills: 0,
+    target: null,
+    canSee: false,
+    retarget: Math.random() * 0.3,
+    strafe: 1,
+    strafeTimer: 1,
+    seenFor: 0,
+    nextBurst: 0,
+    shotsLeft: 0,
+    nextShot: 0,
+    respawnAt: 0,
+    flash: 0,
+  };
+  bots.push(bot);
+  respawnBot(bot);
+}
+
+function respawnBot(bot) {
+  const s = pickSpawn();
+  bot.mesh.position.set(s[0], 1, s[1]);
+  bot.health = BOT_HEALTH;
+  bot.alive = true;
+  bot.mesh.visible = true;
+  bot.target = null;
+  bot.canSee = false;
+  bot.seenFor = 0;
+  bot.shotsLeft = 0;
+  bot.nextBurst = 0;
+  drawTag(bot);
+}
+
+function clearBots() {
+  for (const b of bots) scene.remove(b.mesh);
+  bots.length = 0;
+  for (const eb of enemyBullets) scene.remove(eb);
+  enemyBullets.length = 0;
+}
+
+function startBotMode() {
+  clearBots();
+  for (let i = 0; i < BOT_COUNT; i++) makeBot(i);
+  kills = 0;
+  deaths = 0;
+  updateStats();
+  modeOverlay.style.display = "none";
+  overlay.style.display = "flex";
+}
+
+makeModeCard(
+  "FIGHT BOTS",
+  BOT_COUNT + " bots roam the field. Everyone fights everyone, bots included.",
+  true,
+  startBotMode
+);
+makeModeCard(
+  "PLAY ONLINE",
+  "Everyone who joins fights on one map.<br><br><b>Coming next</b>",
+  false
+);
+makeModeCard(
+  "PRIVATE ROOM",
+  "Join friends with a room code.<br><br><b>Coming next</b>",
+  false
+);
+
+// A target is either the player or a bot
+function posOf(e) {
+  return e === player ? player.position : e.mesh.position;
+}
+function isAlive(e) {
+  return e === player ? !dead : e.alive;
+}
+
+// attacker = "player", a bot, or nothing. how = "banned", "beam", or nothing.
+function damageBot(bot, amount, how, attacker) {
+  if (!bot.alive) return;
+  const dealt = Math.min(amount, bot.health);
+  if (attacker === "player") addUltCharge(dealt * current.ultPerDamage);
+  bot.health -= amount;
+  bot.flash = 0.08;
+  if (bot.health <= 0) {
+    bot.health = 0;
+    bot.alive = false;
+    bot.mesh.visible = false;
+    bot.respawnAt = performance.now() / 1000 + BOT_RESPAWN;
+    if (attacker === "player") {
+      kills++;
+      addUltCharge(current.ultPerKill);
+      showKillBanner(bot.name, how); // elimination banner
+      addFeed("You", bot.name, how);
+    } else if (attacker && attacker.name) {
+      attacker.kills++;
+      addFeed(attacker.name, bot.name, how);
+    }
+    updateStats();
+  }
+  drawTag(bot);
+}
+
+function botShoot(bot, dx, dz) {
+  const e = (Math.random() - 0.5) * 2 * BOT_AIM_ERROR; // bots are not perfect
+  const c = Math.cos(e);
+  const s = Math.sin(e);
+  const dir = new THREE.Vector3(dx * c - dz * s, 0, dx * s + dz * c);
+  const b = new THREE.Mesh(enemyBulletGeo, bot.bulletMat);
+  const p = bot.mesh.position;
+  b.position.set(p.x + dir.x * 0.8, 1.5, p.z + dir.z * 0.8);
+  b.userData = { dir, life: 130, owner: bot, damage: BOT_DAMAGE };
+  scene.add(b);
+  enemyBullets.push(b);
+}
+
+function updateBots(dt, t) {
+  for (const bot of bots) {
+    if (!bot.alive) {
+      if (t >= bot.respawnAt) respawnBot(bot);
+      continue;
+    }
+    const pos = bot.mesh.position;
+    bot.flash = Math.max(0, bot.flash - dt);
+    bot.mesh.material.color.setHex(bot.flash > 0 ? 0xffffff : bot.color);
+
+    // forget a target that died
+    if (bot.target && !isAlive(bot.target)) {
+      bot.target = null;
+      bot.canSee = false;
+    }
+
+    // look for the nearest enemy a few times per second
+    bot.retarget -= dt;
+    if (bot.retarget <= 0) {
+      bot.retarget = 0.25 + Math.random() * 0.15;
+      const list = [];
+      if (!dead) list.push(player);
+      for (const o of bots) if (o !== bot && o.alive) list.push(o);
+
+      let seenBest = null;
+      let seenD = 1e9;
+      let anyBest = null;
+      let anyD = 1e9;
+      for (const e of list) {
+        const p = posOf(e);
+        const d = Math.hypot(p.x - pos.x, p.z - pos.z);
+        if (d < anyD) {
+          anyD = d;
+          anyBest = e;
+        }
+        if (d < BOT_VIEW && d < seenD && hasLineOfSight(pos, p)) {
+          seenD = d;
+          seenBest = e;
+        }
+      }
+      const newTarget = seenBest || anyBest;
+      bot.canSee = !!seenBest;
+      if (newTarget !== bot.target) {
+        bot.target = newTarget;
+        bot.seenFor = 0;
+      }
+    }
+
+    const target = bot.target;
+    if (!target) continue;
+
+    const tp = posOf(target);
+    let dx = tp.x - pos.x;
+    let dz = tp.z - pos.z;
+    const dist = Math.hypot(dx, dz) || 0.001;
+    dx /= dist;
+    dz /= dist;
+    bot.mesh.rotation.y = Math.atan2(-dx, -dz); // face the target
+
+    // movement: chase if far or can't see, back off if too close, always strafe
+    bot.strafeTimer -= dt;
+    if (bot.strafeTimer <= 0) {
+      bot.strafe = Math.random() < 0.5 ? -1 : 1;
+      bot.strafeTimer = 0.7 + Math.random() * 1.3;
+    }
+    let mx = 0;
+    let mz = 0;
+    if (!bot.canSee || dist > 18) {
+      mx += dx;
+      mz += dz;
+    } else if (dist < 8) {
+      mx -= dx;
+      mz -= dz;
+    }
+    mx += -dz * bot.strafe * 0.8;
+    mz += dx * bot.strafe * 0.8;
+    const len = Math.hypot(mx, mz) || 1;
+    pos.x += (mx / len) * BOT_SPEED * dt;
+    pos.z += (mz / len) * BOT_SPEED * dt;
+
+    // don't stack on top of other bots
+    for (const o of bots) {
+      if (o === bot || !o.alive) continue;
+      const ox = pos.x - o.mesh.position.x;
+      const oz = pos.z - o.mesh.position.z;
+      const od = Math.hypot(ox, oz);
+      if (od < 1.4 && od > 0.001) {
+        pos.x += (ox / od) * 0.05;
+        pos.z += (oz / od) * 0.05;
+      }
+    }
+    pos.x = Math.max(-48, Math.min(48, pos.x));
+    pos.z = Math.max(-48, Math.min(48, pos.z));
+    pushOutOfWalls(pos);
+
+    // shooting: wait a moment after spotting someone, then fire bursts
+    if (bot.canSee && dist < BOT_VIEW) {
+      bot.seenFor += dt;
+      if (bot.shotsLeft > 0) {
+        if (t >= bot.nextShot) {
+          botShoot(bot, dx, dz);
+          bot.shotsLeft--;
+          bot.nextShot = t + BOT_SHOT_GAP;
+        }
+      } else if (bot.seenFor > BOT_REACTION && t >= bot.nextBurst) {
+        bot.shotsLeft = BOT_SHOTS;
+        bot.nextShot = t;
+        bot.nextBurst = t + BOT_BURST_DELAY + Math.random() * 0.8;
+      }
+    } else {
+      bot.seenFor = 0;
+      bot.shotsLeft = 0;
+    }
   }
 }
 
@@ -953,10 +1359,13 @@ function explode(pos) {
   scene.add(boom);
   setTimeout(() => scene.remove(boom), 250);
 
-  const dx = dummy.position.x - pos.x;
-  const dz = dummy.position.z - pos.z;
-  if (Math.sqrt(dx * dx + dz * dz) < current.grenadeRadius + 0.5) {
-    damageDummy(current.grenadeDamage);
+  for (const bot of bots) {
+    if (!bot.alive) continue;
+    const dx = bot.mesh.position.x - pos.x;
+    const dz = bot.mesh.position.z - pos.z;
+    if (Math.hypot(dx, dz) < current.grenadeRadius + 0.5) {
+      damageBot(bot, current.grenadeDamage, undefined, "player");
+    }
   }
 }
 
@@ -971,14 +1380,16 @@ function melee() {
 
 // Called in the middle of the swing: one shots anything in front of him
 function meleeStrike() {
-  if (!dummy.visible) return;
-  const dx = dummy.position.x - player.position.x;
-  const dz = dummy.position.z - player.position.z;
-  const dist = Math.sqrt(dx * dx + dz * dz);
-  if (dist > current.meleeRange) return;
-  const dot = (dx * -Math.sin(yaw) + dz * -Math.cos(yaw)) / Math.max(dist, 0.001);
-  if (dist > 1.0 && dot < 0.4) return; // must be in front of you
-  damageDummy(ONE_SHOT, "banned");
+  for (const bot of bots) {
+    if (!bot.alive) continue;
+    const dx = bot.mesh.position.x - player.position.x;
+    const dz = bot.mesh.position.z - player.position.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    if (dist > current.meleeRange) continue;
+    const dot = (dx * -Math.sin(yaw) + dz * -Math.cos(yaw)) / Math.max(dist, 0.001);
+    if (dist > 1.0 && dot < 0.4) continue; // must be in front of you
+    damageBot(bot, ONE_SHOT, "banned", "player");
+  }
 }
 
 // ================= MR. MAHONEY: ULT "BALDING" (X) =================
@@ -1008,6 +1419,7 @@ function beginAiming() {
   showPlayerModel();
   headGlow.visible = false;
   crosshair.style.cssText = CROSS_ULT;
+  crosshair.style.display = "block";
   ultText.style.cssText = ULT_TEXT_SMALL;
   ultVignette.style.display = "block";
   beamsHud.style.display = "block";
@@ -1021,6 +1433,7 @@ function endUlt() {
   showPlayerModel();
   headGlow.visible = false;
   crosshair.style.cssText = CROSS_NORMAL;
+  crosshair.style.display = "block";
   ultText.style.display = "none";
   ultVignette.style.display = "none";
   beamsHud.style.display = "none";
@@ -1080,24 +1493,20 @@ function fireBeam() {
   spawnBeam(origin, target);
 
   // damage everything on the line
-  if (dummy.visible) {
-    const v = new THREE.Vector3().subVectors(dummy.position, eye);
+  for (const bot of bots) {
+    if (!bot.alive) continue;
+    const v = new THREE.Vector3().subVectors(bot.mesh.position, eye);
     const t = v.dot(f);
     if (t > 0 && t < 90) {
       const closest = eye.clone().addScaledVector(f, t);
-      if (closest.distanceTo(dummy.position) < BEAM_HIT_RADIUS) {
-        damageDummy(current.ultDamage, "beam");
+      if (closest.distanceTo(bot.mesh.position) < BEAM_HIT_RADIUS) {
+        damageBot(bot, current.ultDamage, "beam", "player");
       }
     }
   }
   flash(0.45, 250);
   shake = 1;
 }
-
-// ================= ENEMY (dummy shoots back) =================
-const enemyBullets = [];
-const enemyBulletMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-let enemyTimer = 0;
 
 // ================= GAME LOOP =================
 let lastFrame = performance.now();
@@ -1152,6 +1561,9 @@ function animate() {
   }
   pushOutOfWalls(player.position);
   player.rotation.y = yaw;
+
+  // Bots think and move (only while you are in the match)
+  if (playing) updateBots(dt, now / 1000);
 
   // Ban hammer swing
   if (meleeStart > 0) {
@@ -1236,8 +1648,15 @@ function animate() {
     b.position.addScaledVector(b.userData.dir, 0.8);
     b.rotation.z += PHONE_SPIN; // card spin
 
-    if (dummy.visible && b.position.distanceTo(dummy.position) < 1.2) {
-      damageDummy(b.userData.damage);
+    let hitBot = null;
+    for (const bot of bots) {
+      if (bot.alive && b.position.distanceTo(bot.mesh.position) < 1.2) {
+        hitBot = bot;
+        break;
+      }
+    }
+    if (hitBot) {
+      damageBot(hitBot, b.userData.damage, undefined, "player");
       scene.remove(b);
       bullets.splice(i, 1);
       continue;
@@ -1250,43 +1669,50 @@ function animate() {
     }
   }
 
-  // Your grenades (explode on the dummy, a wall, or the ground)
+  // Your grenades (explode on a bot, a wall, or the ground)
   for (let i = grenades.length - 1; i >= 0; i--) {
     const g = grenades[i];
     g.userData.vel.y -= 0.012;
     g.position.add(g.userData.vel);
     g.rotation.x += 0.25;
     g.rotation.z += 0.2;
-    const hitDummy = dummy.visible && g.position.distanceTo(dummy.position) < 1.4;
-    if (hitDummy || g.position.y <= 0.2 || insideWall(g.position)) {
+    let hitBot = false;
+    for (const bot of bots) {
+      if (bot.alive && g.position.distanceTo(bot.mesh.position) < 1.4) {
+        hitBot = true;
+        break;
+      }
+    }
+    if (hitBot || g.position.y <= 0.2 || insideWall(g.position)) {
       explode(g.position);
       scene.remove(g);
       grenades.splice(i, 1);
     }
   }
 
-  // Dummy shoots at you about every 1.5 seconds
-  enemyTimer++;
-  if (enemyTimer >= 90 && playing && dummy.visible && !dead) {
-    enemyTimer = 0;
-    const eb = new THREE.Mesh(new THREE.SphereGeometry(0.2), enemyBulletMat);
-    eb.position.copy(dummy.position);
-    eb.position.y = 1.5;
-    const dir = new THREE.Vector3().subVectors(player.position, dummy.position);
-    dir.y = 0;
-    dir.normalize();
-    eb.userData.dir = dir;
-    eb.userData.life = 120;
-    scene.add(eb);
-    enemyBullets.push(eb);
-  }
-
+  // Bot bullets (they can hit you and other bots)
   for (let i = enemyBullets.length - 1; i >= 0; i--) {
     const eb = enemyBullets[i];
-    eb.position.addScaledVector(eb.userData.dir, 0.4);
+    eb.position.addScaledVector(eb.userData.dir, BOT_BULLET_SPEED);
 
-    if (!dead && eb.position.distanceTo(player.position) < 1.2) {
-      damagePlayer(10);
+    let used = false;
+    if (playing && !dead && eb.position.distanceTo(player.position) < 1.2) {
+      damagePlayer(eb.userData.damage, eb.userData.owner);
+      used = true;
+    } else {
+      for (const bot of bots) {
+        if (
+          bot.alive &&
+          bot !== eb.userData.owner &&
+          eb.position.distanceTo(bot.mesh.position) < 1.2
+        ) {
+          damageBot(bot, eb.userData.damage, undefined, eb.userData.owner);
+          used = true;
+          break;
+        }
+      }
+    }
+    if (used) {
       scene.remove(eb);
       enemyBullets.splice(i, 1);
       continue;
