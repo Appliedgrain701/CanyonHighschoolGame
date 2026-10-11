@@ -2233,4 +2233,228 @@ function animate() {
     const k = t.userData.life / 30;
     t.material.opacity = 0.7 * k;
     t.scale.setScalar(0.4 + k * 0.6);
-    if (t.userData.life <=
+    if (t.userData.life <= 0) {
+      scene.remove(t);
+      t.material.dispose();
+      trails.splice(i, 1);
+    }
+  }
+
+  // Fade out ult beams
+  for (let i = beams.length - 1; i >= 0; i--) {
+    const g = beams[i];
+    g.userData.life--;
+    const k = g.userData.life / BEAM_LIFE;
+    g.children[0].material.opacity = 0.6 * k;
+    g.children[1].material.opacity = k;
+    const w = 0.3 + 0.7 * k;
+    g.children[0].scale.x = g.children[0].scale.z = 0.25 * w;
+    g.children[1].scale.x = g.children[1].scale.z = 0.1 * w;
+    if (g.userData.life <= 0) {
+      scene.remove(g);
+      g.children[0].material.dispose();
+      g.children[1].material.dispose();
+      beams.splice(i, 1);
+    }
+  }
+
+  // Phones (yours do damage, other players' phones are just for show)
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.position.addScaledVector(b.userData.dir, 0.8);
+    b.rotation.z += PHONE_SPIN; // card spin
+
+    if (!b.userData.fx) {
+      let hitBot = null;
+      for (const bot of bots) {
+        if (bot.alive && b.position.distanceTo(bot.mesh.position) < 1.2) {
+          hitBot = bot;
+          break;
+        }
+      }
+      if (hitBot) {
+        damageBot(hitBot, b.userData.damage, undefined, "player");
+        scene.remove(b);
+        bullets.splice(i, 1);
+        continue;
+      }
+
+      let hitRemote = null;
+      for (const r of remotes.values()) {
+        if (r.alive && b.position.distanceTo(r.mesh.position) < 1.2) {
+          hitRemote = r;
+          break;
+        }
+      }
+      if (hitRemote) {
+        netSend({ t: "hit", target: hitRemote.id, k: "phone" });
+        scene.remove(b);
+        bullets.splice(i, 1);
+        continue;
+      }
+    }
+
+    b.userData.life--;
+    if (b.userData.life <= 0 || b.position.y < 0 || insideWall(b.position)) {
+      scene.remove(b);
+      bullets.splice(i, 1);
+    }
+  }
+
+  // Grenades (explode on a player, a wall, or the ground)
+  for (let i = grenades.length - 1; i >= 0; i--) {
+    const g = grenades[i];
+    g.userData.vel.y -= 0.012;
+    g.position.add(g.userData.vel);
+    g.rotation.x += 0.25;
+    g.rotation.z += 0.2;
+    let hitSomething = false;
+    if (!g.userData.fx) {
+      for (const bot of bots) {
+        if (bot.alive && g.position.distanceTo(bot.mesh.position) < 1.4) {
+          hitSomething = true;
+          break;
+        }
+      }
+      if (!hitSomething) {
+        for (const r of remotes.values()) {
+          if (r.alive && g.position.distanceTo(r.mesh.position) < 1.4) {
+            hitSomething = true;
+            break;
+          }
+        }
+      }
+    }
+    if (hitSomething || g.position.y <= 0.2 || insideWall(g.position)) {
+      explode(g.position, g.userData.fx);
+      scene.remove(g);
+      grenades.splice(i, 1);
+    }
+  }
+
+  // Bot bullets (they can hit you and other bots)
+  for (let i = enemyBullets.length - 1; i >= 0; i--) {
+    const eb = enemyBullets[i];
+    eb.position.addScaledVector(eb.userData.dir, BOT_BULLET_SPEED);
+
+    let used = false;
+    if (playing && !dead && eb.position.distanceTo(player.position) < 1.2) {
+      damagePlayer(eb.userData.damage, eb.userData.owner);
+      used = true;
+    } else {
+      for (const bot of bots) {
+        if (
+          bot.alive &&
+          bot !== eb.userData.owner &&
+          eb.position.distanceTo(bot.mesh.position) < 1.2
+        ) {
+          damageBot(bot, eb.userData.damage, undefined, eb.userData.owner);
+          used = true;
+          break;
+        }
+      }
+    }
+    if (used) {
+      scene.remove(eb);
+      enemyBullets.splice(i, 1);
+      continue;
+    }
+
+    eb.userData.life--;
+    if (eb.userData.life <= 0 || insideWall(eb.position)) {
+      scene.remove(eb);
+      enemyBullets.splice(i, 1);
+    }
+  }
+
+  // Ability text
+  abilityHud.innerHTML =
+    cooldownText("Dash", "Q", lastDash, current.dashCooldown) +
+    "<br>" +
+    cooldownText("Grenade", "E", lastGrenade, current.grenadeCooldown) +
+    "<br>" +
+    "Shield (Right Click): " + (shieldUp ? "UP" : "hold") +
+    "<br>" +
+    cooldownText("Ban Hammer", "V", lastMelee, current.meleeCooldown);
+
+  // Ult bar
+  const ultPct = Math.floor((ultCharge / current.ultCost) * 100);
+  const ultReady = ultPct >= 100;
+  ultFill.style.width = ultPct + "%";
+  ultFill.className = ultReady || ultPhase !== 0 ? "rainbow" : "ultGold";
+  if (ultPhase !== 0) ultLabel.textContent = "BALDING!";
+  else if (ultReady) ultLabel.textContent = "ULT READY - PRESS X";
+  else ultLabel.textContent = "ULT " + ultPct + "%";
+
+  // Red screen edges while dashing
+  dashFxLevel = dashFrames > 0 ? 1 : dashFxLevel * 0.85;
+  dashFx.style.opacity = dashFxLevel;
+
+  // Camera
+  const cp = Math.cos(pitch);
+  const sp = Math.sin(pitch);
+  if (ultPhase === 1) {
+    // 2nd person: camera in front of him, pushing in on his bald head
+    const t = Math.min(1, (now - ultStart) / ULT_CUTSCENE_MS);
+    const ease = t * t * (3 - 2 * t);
+    const headY = player.position.y + headLocalY;
+    const p = new THREE.Vector3();
+    for (let dist = 4.2 - 2.0 * ease; dist > 1.2; dist -= 0.4) {
+      p.set(
+        player.position.x - Math.sin(yaw) * dist,
+        headY + 0.1,
+        player.position.z - Math.cos(yaw) * dist
+      );
+      if (!insideWall(p)) break; // pull the camera in if a wall is in the way
+    }
+    camera.position.copy(p);
+    camera.lookAt(player.position.x, headY, player.position.z);
+    const s = 0.6 + 4.5 * ease + 0.25 * Math.sin(now / 60);
+    headGlow.scale.set(s, s, 1);
+  } else if (fp) {
+    // first person: camera at his eyes
+    shake *= 0.85;
+    camera.position.set(
+      player.position.x + (Math.random() - 0.5) * shake * 0.08,
+      player.position.y + 0.7 + (Math.random() - 0.5) * shake * 0.08,
+      player.position.z
+    );
+    camera.lookAt(
+      camera.position.x - Math.sin(yaw) * cp * 20,
+      camera.position.y + sp * 20,
+      camera.position.z - Math.cos(yaw) * cp * 20
+    );
+  } else {
+    // third person: camera sits behind the player (scroll wheel zooms)
+    camDist += (camDistTarget - camDist) * 0.15;
+    const aimY = player.position.y + 0.5;
+    const cpos = new THREE.Vector3();
+    for (let d = camDist; d > 1.5; d -= 0.5) {
+      cpos.set(
+        player.position.x + Math.sin(yaw) * cp * d,
+        Math.max(0.5, aimY + 1.5 - sp * d),
+        player.position.z + Math.cos(yaw) * cp * d
+      );
+      if (!insideWall(cpos)) break; // slide the camera forward if a wall is behind you
+    }
+    camera.position.copy(cpos);
+    camera.lookAt(
+      player.position.x - Math.sin(yaw) * cp * 20,
+      aimY + sp * 20,
+      player.position.z - Math.cos(yaw) * cp * 20
+    );
+  }
+
+  // Zoom: wider when dashing, tighter during the ult
+  let fovTarget = 75;
+  if (ultPhase === 1) fovTarget = 50;
+  else if (ultPhase === 2) fovTarget = 60;
+  else if (dashFrames > 0) fovTarget = 95;
+  if (Math.abs(camera.fov - fovTarget) > 0.1) {
+    camera.fov += (fovTarget - camera.fov) * 0.2;
+    camera.updateProjectionMatrix();
+  }
+
+  renderer.render(scene, camera);
+}
+animate();
