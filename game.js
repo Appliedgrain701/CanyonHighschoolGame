@@ -2,7 +2,7 @@ import * as THREE from "three";
 
 // ================= ONLINE SETTINGS =================
 // Paste your Render server address here. It must start with wss:// (not https://)
-const SERVER_URL = "wss://YOUR-SERVER-NAME.onrender.com";
+const SERVER_URL = "wss://canyonhighschoolgame.onrender.com";
 
 // ================= SCENE =================
 const scene = new THREE.Scene();
