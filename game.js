@@ -1,6 +1,9 @@
 import * as THREE from "three";
-//==================Online settingsJews=====
-const SERVER_URL = "wss://my-game.onrender.com";
+
+// ================= ONLINE SETTINGS =================
+// Paste your Render server address here. It must start with wss:// (not https://)
+const SERVER_URL = "wss://YOUR-SERVER-NAME.onrender.com";
+
 // ================= SCENE =================
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb);
@@ -332,6 +335,7 @@ const ULT_BEAM_DELAY = 900; // ms between beams
 const BEAM_HIT_RADIUS = 1.4;
 const BEAM_LIFE = 45; // frames a beam stays visible
 const PHONE_VIEW = { x: 0.38, y: -0.36, z: -0.8 }; // where the phone sits in first person
+const NET_RATE = 50; // ms between position updates sent online (20 per second)
 
 // ----- BOT SETTINGS (change these to make bots easier or harder) -----
 const BOT_COUNT = 5;
@@ -380,6 +384,20 @@ let dashFxLevel = 0;
 let dashFrames = 0;
 let kills = 0;
 let deaths = 0;
+
+// online
+let mode = "bots"; // "bots" or "online"
+let net = null; // { ws, id, code, ready, join }
+let lastNetSend = 0;
+const remotes = new Map(); // other online players
+
+// Random name on purpose: no typing, so nobody can type something inappropriate
+const NAME_A = ["Swift", "Brave", "Sneaky", "Mighty", "Lucky", "Clever", "Wild", "Silent"];
+const NAME_B = ["Cougar", "Tiger", "Panther", "Falcon", "Wolf", "Bear", "Shark", "Eagle"];
+const myName =
+  NAME_A[Math.floor(Math.random() * NAME_A.length)] + " " +
+  NAME_B[Math.floor(Math.random() * NAME_B.length)] + " " +
+  (10 + Math.floor(Math.random() * 90));
 
 // ================= PLAYER LOOK (picture + camera mode) =================
 const BODY_HEIGHT = 2.2; // height of the cutout picture
@@ -571,6 +589,15 @@ function addFeed(killer, victim, how) {
   setTimeout(() => row.remove(), 4500);
   while (feed.children.length > 6) feed.firstChild.remove();
 }
+function addFeedText(text) {
+  const row = document.createElement("div");
+  row.style.cssText =
+    "background:rgba(0,0,0,0.6);color:#fff;padding:4px 10px;border-radius:4px;border-left:4px solid #3498db;";
+  row.textContent = text;
+  feed.appendChild(row);
+  setTimeout(() => row.remove(), 4500);
+  while (feed.children.length > 6) feed.firstChild.remove();
+}
 
 // Ult charge bar (bottom center)
 const ultBox = document.createElement("div");
@@ -601,11 +628,32 @@ deathMsg.style.cssText =
 document.body.appendChild(deathMsg);
 
 const helpText = document.createElement("div");
-helpText.textContent =
-  "WASD move | Click shoot | Right-click shield | Q dash | E grenade | V hammer | X ult | 7 camera | C teacher";
 helpText.style.cssText =
   "position:fixed;top:10px;width:100%;text-align:center;font:14px sans-serif;color:#fff;text-shadow:1px 1px 2px #000;";
 document.body.appendChild(helpText);
+function setHelp() {
+  helpText.textContent =
+    "WASD move | Click shoot | Right-click shield | Q dash | E grenade | V hammer | X ult | 7 camera | " +
+    (mode === "online" ? "L leave" : "C teacher");
+}
+setHelp();
+
+// Room info (online only)
+const roomHud = document.createElement("div");
+roomHud.style.cssText =
+  "position:fixed;top:34px;width:100%;text-align:center;font:bold 15px sans-serif;color:#ffd700;" +
+  "text-shadow:1px 1px 2px #000;display:none;pointer-events:none;";
+document.body.appendChild(roomHud);
+function updateRoomHud() {
+  if (mode !== "online" || !net) {
+    roomHud.style.display = "none";
+    return;
+  }
+  const where =
+    net.code === "PUBLIC" ? "PUBLIC LOBBY" : "ROOM CODE: " + net.code + " (share it with friends)";
+  roomHud.textContent = where + "   |   Players: " + (remotes.size + 1);
+  roomHud.style.display = "block";
+}
 
 // White flash (used for the ult and each beam)
 const flashDiv = document.createElement("div");
@@ -702,6 +750,8 @@ function cooldownText(label, key, last, cooldown) {
 // ================= MENUS =================
 const MENU_STYLE =
   "position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:10;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif;color:#fff;";
+const BTN_STYLE =
+  "padding:14px 30px;border:3px solid #fff;border-radius:10px;background:#222;font-size:20px;font-weight:bold;cursor:pointer;";
 
 // ----- Mode select screen -----
 const modeOverlay = document.createElement("div");
@@ -710,6 +760,10 @@ modeOverlay.innerHTML = '<h1 style="margin:0 0 30px;font-size:42px;">CHOOSE A MO
 const modeRow = document.createElement("div");
 modeRow.style.cssText = "display:flex;gap:20px;";
 modeOverlay.appendChild(modeRow);
+const modeMsg = document.createElement("div");
+modeMsg.style.cssText =
+  "margin-top:22px;font-size:16px;color:#ff6b6b;min-height:20px;text-align:center;max-width:700px;";
+modeOverlay.appendChild(modeMsg);
 document.body.appendChild(modeOverlay);
 
 function makeModeCard(title, desc, enabled, onClick) {
@@ -729,6 +783,92 @@ function makeModeCard(title, desc, enabled, onClick) {
   modeRow.appendChild(card);
 }
 
+// ----- Private room screen -----
+const privateOverlay = document.createElement("div");
+privateOverlay.style.cssText = MENU_STYLE;
+privateOverlay.style.display = "none";
+privateOverlay.innerHTML = '<h1 style="margin:0 0 26px;font-size:42px;">PRIVATE ROOM</h1>';
+
+const createBtn = document.createElement("div");
+createBtn.textContent = "CREATE A NEW ROOM";
+createBtn.style.cssText = BTN_STYLE;
+createBtn.addEventListener("mouseenter", () => (createBtn.style.background = "#444"));
+createBtn.addEventListener("mouseleave", () => (createBtn.style.background = "#222"));
+createBtn.addEventListener("click", () => startOnline({ create: true }));
+
+const orText = document.createElement("div");
+orText.textContent = "or join a friend's room with its 4-letter code:";
+orText.style.cssText = "margin:26px 0 12px;font-size:16px;opacity:0.85;";
+
+const joinRow = document.createElement("div");
+joinRow.style.cssText = "display:flex;gap:12px;align-items:center;";
+const codeInput = document.createElement("input");
+codeInput.maxLength = 4;
+codeInput.placeholder = "CODE";
+codeInput.style.cssText =
+  "width:130px;padding:12px;font-size:26px;font-weight:bold;text-align:center;letter-spacing:6px;" +
+  "border:3px solid #fff;border-radius:10px;background:#111;color:#fff;outline:none;";
+codeInput.addEventListener("input", () => {
+  codeInput.value = codeInput.value.toUpperCase().replace(/[^A-Z]/g, "");
+});
+const joinBtn = document.createElement("div");
+joinBtn.textContent = "JOIN";
+joinBtn.style.cssText = BTN_STYLE;
+joinBtn.addEventListener("mouseenter", () => (joinBtn.style.background = "#444"));
+joinBtn.addEventListener("mouseleave", () => (joinBtn.style.background = "#222"));
+joinBtn.addEventListener("click", () => {
+  if (codeInput.value.length !== 4) {
+    privMsg.textContent = "Type the 4-letter room code first.";
+    return;
+  }
+  startOnline({ room: codeInput.value });
+});
+codeInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") joinBtn.click();
+});
+joinRow.appendChild(codeInput);
+joinRow.appendChild(joinBtn);
+
+const privMsg = document.createElement("div");
+privMsg.style.cssText =
+  "margin-top:20px;font-size:16px;color:#ff6b6b;min-height:20px;text-align:center;max-width:600px;";
+
+const privBack = document.createElement("div");
+privBack.textContent = "< Back to modes";
+privBack.style.cssText =
+  "margin-top:20px;font-size:16px;cursor:pointer;text-decoration:underline;opacity:0.8;";
+privBack.addEventListener("click", () => {
+  privateOverlay.style.display = "none";
+  modeOverlay.style.display = "flex";
+});
+
+privateOverlay.appendChild(createBtn);
+privateOverlay.appendChild(orText);
+privateOverlay.appendChild(joinRow);
+privateOverlay.appendChild(privMsg);
+privateOverlay.appendChild(privBack);
+document.body.appendChild(privateOverlay);
+
+// ----- Connecting screen -----
+const statusOverlay = document.createElement("div");
+statusOverlay.style.cssText = MENU_STYLE + "z-index:12;";
+statusOverlay.style.display = "none";
+const statusText = document.createElement("div");
+statusText.style.cssText = "font-size:24px;max-width:620px;text-align:center;line-height:34px;";
+const statusCancel = document.createElement("div");
+statusCancel.textContent = "Cancel";
+statusCancel.style.cssText =
+  "margin-top:26px;font-size:16px;cursor:pointer;text-decoration:underline;opacity:0.8;";
+statusCancel.addEventListener("click", () => goToModes());
+statusOverlay.appendChild(statusText);
+statusOverlay.appendChild(statusCancel);
+document.body.appendChild(statusOverlay);
+
+function showStatus(text) {
+  statusText.textContent = text;
+  statusOverlay.style.display = "flex";
+}
+
 // ----- Teacher select screen -----
 const overlay = document.createElement("div");
 overlay.style.cssText = MENU_STYLE;
@@ -742,13 +882,7 @@ overlay.appendChild(cardRow);
 const backBtn = document.createElement("div");
 backBtn.textContent = "< Back to modes";
 backBtn.style.cssText = "margin-top:28px;font-size:16px;cursor:pointer;text-decoration:underline;opacity:0.8;";
-backBtn.addEventListener("click", () => {
-  playing = false;
-  clearBots();
-  overlay.style.display = "none";
-  modeOverlay.style.display = "flex";
-  document.exitPointerLock();
-});
+backBtn.addEventListener("click", () => goToModes());
 overlay.appendChild(backBtn);
 document.body.appendChild(overlay);
 
@@ -826,6 +960,11 @@ function selectCharacter(key) {
   updateHealthBar();
   overlay.style.display = "none";
   playing = true;
+  if (mode === "online" && net) {
+    // the server picks your spawn point and sends it back
+    net.ready = true;
+    netSend({ t: "ready", char: key });
+  }
   renderer.domElement.requestPointerLock();
 }
 
@@ -835,7 +974,22 @@ function openSelectScreen() {
   document.exitPointerLock();
 }
 
-// ================= PLAYER DAMAGE / RESPAWN =================
+// Back to the mode screen from anywhere (closes the online connection too)
+function goToModes(msg) {
+  playing = false;
+  endUlt();
+  meleeStart = 0;
+  leaveOnline();
+  clearBots();
+  overlay.style.display = "none";
+  privateOverlay.style.display = "none";
+  statusOverlay.style.display = "none";
+  modeMsg.textContent = msg || "";
+  modeOverlay.style.display = "flex";
+  document.exitPointerLock();
+}
+
+// ================= PLAYER DAMAGE / RESPAWN (bot mode) =================
 function damagePlayer(amount, attacker) {
   if (dead || ultPhase !== 0) return; // can't be hurt while using the ult
   if (shieldUp) amount *= 1 - current.shieldBlock; // shield blocks 85%
@@ -884,7 +1038,8 @@ addEventListener("keydown", (e) => {
   if (e.code === "KeyE") throwGrenade();
   if (e.code === "KeyV") melee();
   if (e.code === "KeyX") startUlt();
-  if (e.code === "KeyC") openSelectScreen();
+  if (e.code === "KeyC" && mode === "bots") openSelectScreen();
+  if (e.code === "KeyL" && mode === "online") goToModes();
 });
 addEventListener("keyup", (e) => (keys[e.code] = false));
 
@@ -966,7 +1121,7 @@ function pickSpawn() {
   return best;
 }
 
-// Name + health bar above a bot's head (one picture that gets redrawn)
+// Name + health bar above a head (one picture that gets redrawn)
 function makeNameTag() {
   const c = document.createElement("canvas");
   c.width = 256;
@@ -978,6 +1133,7 @@ function makeNameTag() {
   return { spr, c, tex };
 }
 
+// Works for bots and for online players (anything with name, health, tagCanvas, tagTex)
 function drawTag(bot) {
   const g = bot.tagCanvas.getContext("2d");
   g.clearRect(0, 0, 256, 64);
@@ -992,7 +1148,7 @@ function drawTag(bot) {
   g.fillStyle = "#000";
   g.fillRect(28, 38, 200, 16);
   g.fillStyle = "#2ecc40";
-  g.fillRect(30, 40, 196 * Math.max(0, bot.health / BOT_HEALTH), 12);
+  g.fillRect(30, 40, 196 * Math.max(0, bot.health / (bot.maxHealth || BOT_HEALTH)), 12);
   bot.tagTex.needsUpdate = true;
 }
 
@@ -1058,11 +1214,13 @@ function clearBots() {
 }
 
 function startBotMode() {
+  leaveOnline();
   clearBots();
   for (let i = 0; i < BOT_COUNT; i++) makeBot(i);
   kills = 0;
   deaths = 0;
   updateStats();
+  setHelp();
   modeOverlay.style.display = "none";
   overlay.style.display = "flex";
 }
@@ -1075,13 +1233,19 @@ makeModeCard(
 );
 makeModeCard(
   "PLAY ONLINE",
-  "Everyone who joins fights on one map.<br><br><b>Coming next</b>",
-  false
+  "Everyone who joins fights on one map. Free for all.",
+  true,
+  () => startOnline({ room: "PUBLIC" })
 );
 makeModeCard(
   "PRIVATE ROOM",
-  "Join friends with a room code.<br><br><b>Coming next</b>",
-  false
+  "Create a room and share the 4-letter code, or join a friend's room.",
+  true,
+  () => {
+    privMsg.textContent = "";
+    modeOverlay.style.display = "none";
+    privateOverlay.style.display = "flex";
+  }
 );
 
 // A target is either the player or a bot
@@ -1247,40 +1411,384 @@ function updateBots(dt, t) {
   }
 }
 
+// ================= ONLINE =================
+function netSend(obj) {
+  if (net && net.ws && net.ws.readyState === 1) net.ws.send(JSON.stringify(obj));
+}
+
+// Tells the other players about an effect (their screens show it, damage is separate)
+function netFx(k, a) {
+  if (mode === "online") netSend({ t: "fx", k, a });
+}
+
+function nameOf(id) {
+  if (net && id === net.id) return "You";
+  const r = remotes.get(id);
+  return r ? r.name : "Someone";
+}
+
+const REMOTE_COLORS = [0xe74c3c, 0x3498db, 0xf39c12, 0x1abc9c, 0xe91e63, 0x2ecc71, 0x9b59b6, 0xff7f50];
+
+function addRemote(p) {
+  removeRemote(p.id);
+  const color = REMOTE_COLORS[p.id % REMOTE_COLORS.length];
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(1, 2, 1),
+    new THREE.MeshStandardMaterial({ color })
+  );
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.4, 12, 12), skinMat);
+  head.position.y = 1.4;
+  mesh.add(head);
+  const tag = makeNameTag();
+  tag.spr.position.y = 1.9;
+  mesh.add(tag.spr);
+  const hammer = makeHammer();
+  hammer.position.set(0.8, 0.1, -0.2);
+  mesh.add(hammer);
+  const shieldG = makeShield(1.5);
+  scene.add(shieldG);
+  mesh.position.set(p.x, 1, p.z);
+  mesh.visible = p.alive !== false;
+  scene.add(mesh);
+
+  const r = {
+    id: p.id,
+    name: p.name,
+    color,
+    mesh,
+    hammer,
+    shieldG,
+    tagCanvas: tag.c,
+    tagTex: tag.tex,
+    health: p.hp,
+    maxHealth: p.max,
+    alive: p.alive !== false,
+    tx: p.x,
+    tz: p.z,
+    yaw: p.yaw || 0,
+    curYaw: p.yaw || 0,
+    shield: false,
+    flash: 0,
+    swingStart: 0,
+  };
+  remotes.set(p.id, r);
+  drawTag(r);
+
+  // use the cutout picture if there is one
+  texLoader.load(characters.mahoney.picture, (t) => {
+    if (remotes.get(p.id) !== r) return;
+    t.colorSpace = THREE.SRGBColorSpace;
+    const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, alphaTest: 0.05 }));
+    spr.scale.set(BODY_HEIGHT * (t.image.width / t.image.height), BODY_HEIGHT, 1);
+    spr.position.y = BODY_HEIGHT / 2 - 1;
+    mesh.add(spr);
+    mesh.material.visible = false;
+    head.visible = false;
+  });
+  updateRoomHud();
+}
+
+function removeRemote(id) {
+  const r = remotes.get(id);
+  if (!r) return;
+  scene.remove(r.mesh);
+  scene.remove(r.shieldG);
+  remotes.delete(id);
+  updateRoomHud();
+}
+
+// Smoothly slides other players toward where the server says they are
+function updateRemotes(dt, now) {
+  const k = 1 - Math.exp(-dt * 14);
+  for (const r of remotes.values()) {
+    r.mesh.visible = r.alive;
+    if (!r.alive) {
+      r.shieldG.visible = false;
+      continue;
+    }
+    const p = r.mesh.position;
+    p.x += (r.tx - p.x) * k;
+    p.z += (r.tz - p.z) * k;
+    let d = r.yaw - r.curYaw;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    r.curYaw += d * k;
+    r.mesh.rotation.y = r.curYaw;
+
+    r.flash = Math.max(0, r.flash - dt);
+    r.mesh.material.color.setHex(r.flash > 0 ? 0xffffff : r.color);
+
+    r.shieldG.visible = r.shield;
+    if (r.shield) {
+      r.shieldG.position.set(p.x - Math.sin(r.curYaw) * 1.6, 1.4, p.z - Math.cos(r.curYaw) * 1.6);
+      r.shieldG.rotation.y = r.curYaw;
+    }
+
+    if (r.swingStart > 0) {
+      const t = (now - r.swingStart) / MELEE_TIME;
+      if (t >= 1) {
+        r.swingStart = 0;
+        r.hammer.visible = false;
+      } else {
+        r.hammer.visible = true;
+        r.hammer.rotation.x = swingAngle(t, 0.2, 1.0, -1.9);
+      }
+    }
+  }
+}
+
+function leaveOnline() {
+  const n = net;
+  net = null;
+  mode = "bots";
+  if (n && n.ws) {
+    try {
+      n.ws.close();
+    } catch (e) {}
+  }
+  for (const r of remotes.values()) {
+    scene.remove(r.mesh);
+    scene.remove(r.shieldG);
+  }
+  remotes.clear();
+  roomHud.style.display = "none";
+  statusOverlay.style.display = "none";
+  setHelp();
+}
+
+function failOnline(msg) {
+  const j = net && net.join;
+  goToModes();
+  if (j && j.room && j.room !== "PUBLIC") {
+    modeOverlay.style.display = "none";
+    privateOverlay.style.display = "flex";
+    privMsg.textContent = msg;
+  } else {
+    modeMsg.textContent = msg;
+  }
+}
+
+function startOnline(join) {
+  if (SERVER_URL.includes("YOUR-SERVER-NAME")) {
+    const msg = "Online isn't set up yet: paste your Render address into SERVER_URL at the top of game.js.";
+    modeMsg.textContent = msg;
+    privMsg.textContent = msg;
+    return;
+  }
+  leaveOnline();
+  clearBots();
+  mode = "online";
+  setHelp();
+  kills = 0;
+  deaths = 0;
+  updateStats();
+  modeOverlay.style.display = "none";
+  privateOverlay.style.display = "none";
+
+  const myNet = { ws: null, id: null, code: "", ready: false, join };
+  net = myNet;
+  let tries = 0;
+
+  function attempt() {
+    if (net !== myNet) return;
+    tries++;
+    showStatus(
+      "Connecting to the server... (try " + tries + "). The free server falls asleep when nobody is playing, so waking it up can take about a minute."
+    );
+    let ws;
+    try {
+      ws = new WebSocket(SERVER_URL);
+    } catch (e) {
+      failOnline("The server address in game.js isn't valid.");
+      return;
+    }
+    myNet.ws = ws;
+    ws.onopen = () => ws.send(JSON.stringify(Object.assign({ t: "join", name: myName }, join)));
+    ws.onmessage = (ev) => {
+      if (net !== myNet) return;
+      let m;
+      try {
+        m = JSON.parse(ev.data);
+      } catch (e) {
+        return;
+      }
+      handleNet(m);
+    };
+    ws.onclose = () => {
+      if (net !== myNet) return;
+      if (!myNet.id) {
+        if (tries < 25) setTimeout(attempt, 3000); // server is probably still waking up
+        else failOnline("Could not reach the server. Try again in a minute.");
+      } else {
+        failOnline("Lost connection to the server.");
+      }
+    };
+    ws.onerror = () => {};
+  }
+  attempt();
+}
+
+function handleNet(m) {
+  switch (m.t) {
+    case "welcome": {
+      net.id = m.id;
+      net.code = m.code;
+      for (const p of m.players) addRemote(p);
+      statusOverlay.style.display = "none";
+      overlay.style.display = "flex"; // pick your teacher
+      updateRoomHud();
+      break;
+    }
+    case "joined": {
+      addRemote(m.p);
+      addFeedText(m.p.name + " joined");
+      break;
+    }
+    case "left": {
+      const r = remotes.get(m.id);
+      if (r) addFeedText(r.name + " left");
+      removeRemote(m.id);
+      break;
+    }
+    case "st": {
+      for (const s of m.p) {
+        if (s.id === net.id) continue;
+        const r = remotes.get(s.id);
+        if (!r || !r.alive) continue;
+        r.tx = s.x;
+        r.tz = s.z;
+        r.yaw = s.yaw;
+        r.shield = !!s.sh;
+      }
+      break;
+    }
+    case "fx": {
+      handleFx(m);
+      break;
+    }
+    case "hp": {
+      if (m.by === net.id) addUltCharge(m.dealt * current.ultPerDamage);
+      if (m.id === net.id) {
+        playerHealth = m.hp;
+        maxHealth = m.max;
+        updateHealthBar();
+      } else {
+        const r = remotes.get(m.id);
+        if (r) {
+          r.health = m.hp;
+          r.maxHealth = m.max;
+          r.flash = 0.08;
+          drawTag(r);
+        }
+      }
+      break;
+    }
+    case "kill": {
+      const kName = nameOf(m.killer);
+      const vName = nameOf(m.victim);
+      if (m.killer === net.id) {
+        kills++;
+        addUltCharge(current.ultPerKill);
+        showKillBanner(vName, m.how); // elimination banner
+        addFeed("You", vName, m.how);
+      } else if (m.victim === net.id) {
+        deaths++;
+        dead = true;
+        dashFrames = 0;
+        addFeed(kName, "You", m.how);
+        deathMsg.textContent = "ELIMINATED BY " + kName.toUpperCase() + " - respawning...";
+        deathMsg.style.display = "block";
+        showPlayerModel();
+      } else {
+        addFeed(kName, vName, m.how);
+      }
+      const rv = remotes.get(m.victim);
+      if (rv) {
+        rv.alive = false;
+        rv.shield = false;
+      }
+      updateStats();
+      break;
+    }
+    case "respawn": {
+      if (m.id === net.id) {
+        player.position.set(m.x, 1, m.z);
+        playerHealth = m.hp;
+        maxHealth = m.max;
+        dead = false;
+        deathMsg.style.display = "none";
+        showPlayerModel();
+        updateHealthBar();
+      } else {
+        const r = remotes.get(m.id);
+        if (r) {
+          r.alive = true;
+          r.health = m.hp;
+          r.maxHealth = m.max;
+          r.tx = m.x;
+          r.tz = m.z;
+          r.mesh.position.set(m.x, 1, m.z);
+          drawTag(r);
+        }
+      }
+      break;
+    }
+    case "error": {
+      failOnline(m.msg || "Could not join.");
+      break;
+    }
+  }
+}
+
+// Shows other players' phones, grenades and beams on your screen (visual only)
+function handleFx(m) {
+  const r = remotes.get(m.id);
+  if (!r) return;
+  const a = m.a || [];
+  if (m.k === "p") fireBurst(a[0], a[1], a[2], a[3], characters.mahoney, true);
+  else if (m.k === "g") spawnGrenade(a[0], a[1], a[2], a[3], a[4], a[5], true);
+  else if (m.k === "b") spawnBeam(new THREE.Vector3(a[0], a[1], a[2]), new THREE.Vector3(a[3], a[4], a[5]));
+  else if (m.k === "u") addFeedText(r.name + " is BALDING!");
+  else if (m.k === "h") r.swingStart = performance.now();
+}
+
 // ================= MR. MAHONEY: PHONE BURST =================
 const bullets = [];
 const PHONE_SIZE = 0.9; // length of the flying phone
 const PHONE_SPIN = 0.4; // spin speed: 0 = no spin
 
-function shoot() {
-  viewKick = 1; // hand recoil in first person
-  for (let i = 0; i < current.burst; i++) {
+// fx = true means it is another player's phone: it flies but does no damage on your screen
+function fireBurst(px, pz, yw, pt, ch, fx) {
+  for (let i = 0; i < ch.burst; i++) {
     // Even spread: the phones fan out with the same gap every time
-    const offset = (i - (current.burst - 1) / 2) * current.spread;
-    const angle = yaw + offset;
+    const offset = (i - (ch.burst - 1) / 2) * ch.spread;
+    const angle = yw + offset;
 
     const dir = new THREE.Vector3(
-      -Math.sin(angle) * Math.cos(pitch),
-      Math.sin(pitch),
-      -Math.cos(angle) * Math.cos(pitch)
+      -Math.sin(angle) * Math.cos(pt),
+      Math.sin(pt),
+      -Math.cos(angle) * Math.cos(pt)
     );
 
     const b = new THREE.Mesh(phoneGeo, phoneMat);
     b.scale.set(PHONE_SIZE * phoneAspect, PHONE_SIZE, 1);
-    b.position.set(
-      player.position.x + dir.x * 0.7,
-      1.5 + dir.y * 0.7,
-      player.position.z + dir.z * 0.7
-    );
+    b.position.set(px + dir.x * 0.7, 1.5 + dir.y * 0.7, pz + dir.z * 0.7);
     // Lay the phone flat like a thrown card
-    b.rotation.set(-Math.PI / 2 + pitch, angle, 0, "YXZ");
+    b.rotation.set(-Math.PI / 2 + pt, angle, 0, "YXZ");
 
     b.userData.dir = dir;
-    b.userData.damage = current.damage;
+    b.userData.damage = ch.damage;
+    b.userData.fx = !!fx;
     b.userData.life = 100;
     scene.add(b);
     bullets.push(b);
   }
+}
+
+function shoot() {
+  viewKick = 1; // hand recoil in first person
+  fireBurst(player.position.x, player.position.z, yaw, pitch, current, false);
+  netFx("p", [player.position.x, player.position.z, yaw, pitch]);
 }
 
 function tryShoot() {
@@ -1330,28 +1838,31 @@ function dash() {
 const grenades = [];
 const GRENADE_SIZE = 1.4; // size of the thrown phone
 
-function throwGrenade() {
-  if (performance.now() - lastGrenade < current.grenadeCooldown) return;
-  lastGrenade = performance.now();
-  throwAnim = 1; // arm throw in first person
+function spawnGrenade(x, y, z, vx, vy, vz, fx) {
   const g = new THREE.Mesh(phoneGeo, phoneMat);
   g.scale.set(GRENADE_SIZE * phoneAspect, GRENADE_SIZE, 1);
-  g.position.set(
-    player.position.x - Math.sin(yaw) * 0.8,
-    1.8,
-    player.position.z - Math.cos(yaw) * 0.8
-  );
-  // look up = throws farther, look down = throws shorter
-  g.userData.vel = new THREE.Vector3(
-    -Math.sin(yaw) * 0.3,
-    0.2 + pitch * 0.25,
-    -Math.cos(yaw) * 0.3
-  );
+  g.position.set(x, y, z);
+  g.userData.vel = new THREE.Vector3(vx, vy, vz);
+  g.userData.fx = !!fx;
   scene.add(g);
   grenades.push(g);
 }
 
-function explode(pos) {
+function throwGrenade() {
+  if (performance.now() - lastGrenade < current.grenadeCooldown) return;
+  lastGrenade = performance.now();
+  throwAnim = 1; // arm throw in first person
+  const x = player.position.x - Math.sin(yaw) * 0.8;
+  const z = player.position.z - Math.cos(yaw) * 0.8;
+  // look up = throws farther, look down = throws shorter
+  const vx = -Math.sin(yaw) * 0.3;
+  const vy = 0.2 + pitch * 0.25;
+  const vz = -Math.cos(yaw) * 0.3;
+  spawnGrenade(x, 1.8, z, vx, vy, vz, false);
+  netFx("g", [x, 1.8, z, vx, vy, vz]);
+}
+
+function explode(pos, fx) {
   const boom = new THREE.Mesh(
     new THREE.SphereGeometry(current.grenadeRadius, 16, 16),
     new THREE.MeshBasicMaterial({ color: 0xff8800, transparent: true, opacity: 0.5 })
@@ -1359,6 +1870,7 @@ function explode(pos) {
   boom.position.copy(pos);
   scene.add(boom);
   setTimeout(() => scene.remove(boom), 250);
+  if (fx) return; // another player's grenade: just the picture, they send the damage
 
   for (const bot of bots) {
     if (!bot.alive) continue;
@@ -1366,6 +1878,14 @@ function explode(pos) {
     const dz = bot.mesh.position.z - pos.z;
     if (Math.hypot(dx, dz) < current.grenadeRadius + 0.5) {
       damageBot(bot, current.grenadeDamage, undefined, "player");
+    }
+  }
+  for (const r of remotes.values()) {
+    if (!r.alive) continue;
+    const dx = r.mesh.position.x - pos.x;
+    const dz = r.mesh.position.z - pos.z;
+    if (Math.hypot(dx, dz) < current.grenadeRadius + 0.5) {
+      netSend({ t: "hit", target: r.id, k: "grenade" });
     }
   }
 }
@@ -1377,6 +1897,7 @@ function melee() {
   lastMelee = now;
   meleeStart = now;
   meleeHit = false;
+  netFx("h", []);
 }
 
 // Called in the middle of the swing: one shots anything in front of him
@@ -1390,6 +1911,16 @@ function meleeStrike() {
     const dot = (dx * -Math.sin(yaw) + dz * -Math.cos(yaw)) / Math.max(dist, 0.001);
     if (dist > 1.0 && dot < 0.4) continue; // must be in front of you
     damageBot(bot, ONE_SHOT, "banned", "player");
+  }
+  for (const r of remotes.values()) {
+    if (!r.alive) continue;
+    const dx = r.mesh.position.x - player.position.x;
+    const dz = r.mesh.position.z - player.position.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    if (dist > current.meleeRange) continue;
+    const dot = (dx * -Math.sin(yaw) + dz * -Math.cos(yaw)) / Math.max(dist, 0.001);
+    if (dist > 1.0 && dot < 0.4) continue;
+    netSend({ t: "hit", target: r.id, k: "hammer" });
   }
 }
 
@@ -1411,6 +1942,7 @@ function startUlt() {
   ultText.style.cssText = ULT_TEXT_BIG; // "Balding" in rainbow
   headGlow.visible = true;
   flash(0.7, 600);
+  netFx("u", []);
 }
 
 function beginAiming() {
@@ -1492,6 +2024,7 @@ function fireBeam() {
   // beam starts above your eyes (his head) and lines up on the crosshair
   const origin = eye.clone().addScaledVector(up, 0.5).addScaledVector(f, 1.0);
   spawnBeam(origin, target);
+  netFx("b", [origin.x, origin.y, origin.z, target.x, target.y, target.z]);
 
   // damage everything on the line
   for (const bot of bots) {
@@ -1502,6 +2035,17 @@ function fireBeam() {
       const closest = eye.clone().addScaledVector(f, t);
       if (closest.distanceTo(bot.mesh.position) < BEAM_HIT_RADIUS) {
         damageBot(bot, current.ultDamage, "beam", "player");
+      }
+    }
+  }
+  for (const r of remotes.values()) {
+    if (!r.alive) continue;
+    const v = new THREE.Vector3().subVectors(r.mesh.position, eye);
+    const t = v.dot(f);
+    if (t > 0 && t < 90) {
+      const closest = eye.clone().addScaledVector(f, t);
+      if (closest.distanceTo(r.mesh.position) < BEAM_HIT_RADIUS) {
+        netSend({ t: "hit", target: r.id, k: "beam" });
       }
     }
   }
@@ -1563,8 +2107,25 @@ function animate() {
   pushOutOfWalls(player.position);
   player.rotation.y = yaw;
 
+  // Online: tell the server where you are (20 times a second)
+  if (mode === "online" && net && net.ready && playing && !dead && now - lastNetSend > NET_RATE) {
+    lastNetSend = now;
+    netSend({
+      t: "st",
+      x: +player.position.x.toFixed(2),
+      z: +player.position.z.toFixed(2),
+      yaw: +yaw.toFixed(3),
+      pitch: +pitch.toFixed(3),
+      sh: shieldUp ? 1 : 0,
+      inv: ultPhase !== 0 ? 1 : 0,
+    });
+  }
+
   // Bots think and move (only while you are in the match)
   if (playing) updateBots(dt, now / 1000);
+
+  // Other online players
+  updateRemotes(dt, now);
 
   // Ban hammer swing
   if (meleeStart > 0) {
@@ -1643,24 +2204,40 @@ function animate() {
     }
   }
 
-  // Your phones
+  // Phones (yours do damage, other players' phones are just for show)
   for (let i = bullets.length - 1; i >= 0; i--) {
     const b = bullets[i];
     b.position.addScaledVector(b.userData.dir, 0.8);
     b.rotation.z += PHONE_SPIN; // card spin
 
-    let hitBot = null;
-    for (const bot of bots) {
-      if (bot.alive && b.position.distanceTo(bot.mesh.position) < 1.2) {
-        hitBot = bot;
-        break;
+    if (!b.userData.fx) {
+      let hitBot = null;
+      for (const bot of bots) {
+        if (bot.alive && b.position.distanceTo(bot.mesh.position) < 1.2) {
+          hitBot = bot;
+          break;
+        }
       }
-    }
-    if (hitBot) {
-      damageBot(hitBot, b.userData.damage, undefined, "player");
-      scene.remove(b);
-      bullets.splice(i, 1);
-      continue;
+      if (hitBot) {
+        damageBot(hitBot, b.userData.damage, undefined, "player");
+        scene.remove(b);
+        bullets.splice(i, 1);
+        continue;
+      }
+
+      let hitRemote = null;
+      for (const r of remotes.values()) {
+        if (r.alive && b.position.distanceTo(r.mesh.position) < 1.2) {
+          hitRemote = r;
+          break;
+        }
+      }
+      if (hitRemote) {
+        netSend({ t: "hit", target: hitRemote.id, k: "phone" });
+        scene.remove(b);
+        bullets.splice(i, 1);
+        continue;
+      }
     }
 
     b.userData.life--;
@@ -1670,22 +2247,32 @@ function animate() {
     }
   }
 
-  // Your grenades (explode on a bot, a wall, or the ground)
+  // Grenades (explode on a player, a wall, or the ground)
   for (let i = grenades.length - 1; i >= 0; i--) {
     const g = grenades[i];
     g.userData.vel.y -= 0.012;
     g.position.add(g.userData.vel);
     g.rotation.x += 0.25;
     g.rotation.z += 0.2;
-    let hitBot = false;
-    for (const bot of bots) {
-      if (bot.alive && g.position.distanceTo(bot.mesh.position) < 1.4) {
-        hitBot = true;
-        break;
+    let hitSomething = false;
+    if (!g.userData.fx) {
+      for (const bot of bots) {
+        if (bot.alive && g.position.distanceTo(bot.mesh.position) < 1.4) {
+          hitSomething = true;
+          break;
+        }
+      }
+      if (!hitSomething) {
+        for (const r of remotes.values()) {
+          if (r.alive && g.position.distanceTo(r.mesh.position) < 1.4) {
+            hitSomething = true;
+            break;
+          }
+        }
       }
     }
-    if (hitBot || g.position.y <= 0.2 || insideWall(g.position)) {
-      explode(g.position);
+    if (hitSomething || g.position.y <= 0.2 || insideWall(g.position)) {
+      explode(g.position, g.userData.fx);
       scene.remove(g);
       grenades.splice(i, 1);
     }
