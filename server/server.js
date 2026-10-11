@@ -2,6 +2,7 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
+const SERVER_VERSION = 3; // the game warns players if this doesn't match game.js
 const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 12;
 const RESPAWN_MS = 3000;
@@ -15,7 +16,9 @@ const RULES = {
   hammer: { dmg: 99999, range: 10 }, // the only one-shot move
 };
 const SHIELD_BLOCK = 0.85;
+const BONUS_SHIELD = 50; // blue bonus shield a player gets from siphon (keep the same as game.js)
 const HAMMER_COOLDOWN = 25000; // a bit under the real 30s to allow for lag
+const LAST_HIT_WINDOW = 10000; // ms: switching teachers gives the kill to whoever hit you in this time
 
 const SPAWNS = [
   [-15, -35], [15, -35], [-15, 35], [15, 35], [0, -30],
@@ -24,7 +27,7 @@ const SPAWNS = [
 
 const server = http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("Game server is running");
+  res.end("Game server is running (version " + SERVER_VERSION + ")");
 });
 const wss = new WebSocketServer({ server });
 
@@ -104,7 +107,7 @@ function join(p, m) {
   p.room = room;
   const list = [];
   for (const o of room.players.values()) if (o.ready && o !== p) list.push(pub(o));
-  send(p, { t: "welcome", id: p.id, code: room.code, players: list });
+  send(p, { t: "welcome", v: SERVER_VERSION, id: p.id, code: room.code, players: list });
 }
 
 function leave(p) {
@@ -124,10 +127,19 @@ function respawn(p) {
   p.x = s[0];
   p.z = s[1];
   p.hp = p.max;
+  p.bonus = 0;
   p.alive = true;
   p.sh = 0;
   p.inv = 0;
-  broadcast(p.room, { t: "respawn", id: p.id, x: p.x, z: p.z, hp: p.hp, max: p.max });
+  p.lastHitBy = 0;
+  broadcast(p.room, { t: "respawn", id: p.id, x: p.x, z: p.z, hp: p.hp, max: p.max, bonus: 0 });
+}
+
+// Gives a player full health + the blue bonus shield
+function siphonPlayer(room, a) {
+  a.hp = a.max;
+  a.bonus = BONUS_SHIELD;
+  broadcast(room, { t: "hp", id: a.id, hp: a.hp, max: a.max, bonus: a.bonus, by: 0, dealt: 0 });
 }
 
 function hit(a, m) {
@@ -151,21 +163,47 @@ function hit(a, m) {
 
   let dmg = rule.dmg;
   if (t.sh) dmg *= 1 - SHIELD_BLOCK;
-  const dealt = Math.min(dmg, t.hp);
-  t.hp -= dmg;
+  const dealt = Math.min(dmg, t.hp + t.bonus);
+  // the blue bonus shield soaks damage first
+  const soak = Math.min(t.bonus, dmg);
+  t.bonus -= soak;
+  t.hp -= dmg - soak;
+  t.lastHitBy = a.id; // remembered so switching teachers can credit the kill
+  t.lastHitAt = Date.now();
   broadcast(room, {
-    t: "hp", id: t.id, hp: Math.max(0, +t.hp.toFixed(1)), max: t.max, by: a.id, dealt,
+    t: "hp", id: t.id, hp: Math.max(0, +t.hp.toFixed(1)), max: t.max,
+    bonus: +t.bonus.toFixed(1), by: a.id, dealt,
   });
 
   if (t.hp <= 0) {
     t.hp = 0;
+    t.bonus = 0;
     t.alive = false;
+    t.lastHitBy = 0;
     t.deaths++;
     a.kills++;
     const how = m.k === "hammer" ? "banned" : m.k === "beam" ? "beam" : "";
     broadcast(room, { t: "kill", killer: a.id, victim: t.id, how });
+    // siphon: the killer gets full health plus a 50 blue bonus shield
+    siphonPlayer(room, a);
     t.respawnTimer = setTimeout(() => respawn(t), RESPAWN_MS);
   }
+}
+
+// A player picked a teacher from the Esc menu. It counts as a respawn,
+// so whoever hit them last (within the window) gets the kill and the siphon.
+function switchTeacher(p, m) {
+  const room = p.room;
+  const ch = CHARS[m.char] || CHARS.mahoney;
+  const killer = room.players.get(p.lastHitBy);
+  if (killer && killer !== p && killer.ready && Date.now() - p.lastHitAt < LAST_HIT_WINDOW) {
+    p.deaths++;
+    killer.kills++;
+    broadcast(room, { t: "kill", killer: killer.id, victim: p.id, how: "" });
+    if (killer.alive) siphonPlayer(room, killer);
+  }
+  p.max = ch.health;
+  respawn(p); // instant respawn with the new teacher
 }
 
 // ---------- messages ----------
@@ -183,9 +221,11 @@ function onMessage(p, m) {
     p.z = s[1];
     p.max = ch.health;
     p.hp = p.max;
+    p.bonus = 0;
+    p.lastHitBy = 0;
     p.alive = true;
     p.ready = true;
-    send(p, { t: "respawn", id: p.id, x: p.x, z: p.z, hp: p.hp, max: p.max });
+    send(p, { t: "respawn", id: p.id, x: p.x, z: p.z, hp: p.hp, max: p.max, bonus: 0 });
     broadcast(room, { t: "joined", p: pub(p) }, p.id);
     return;
   }
@@ -206,13 +246,16 @@ function onMessage(p, m) {
     broadcast(room, { t: "fx", id: p.id, k: String(m.k).slice(0, 2), a }, p.id);
   } else if (m.t === "hit") {
     hit(p, m);
+  } else if (m.t === "switch") {
+    switchTeacher(p, m);
   }
 }
 
 wss.on("connection", (ws) => {
   const p = {
     id: nextId++, ws, room: null, name: "Player", ready: false, alive: false,
-    x: 0, z: 0, yaw: 0, pitch: 0, sh: 0, inv: 0, hp: 275, max: 275,
+    x: 0, z: 0, yaw: 0, pitch: 0, sh: 0, inv: 0, bonus: 0, hp: 275, max: 275,
+    lastHitBy: 0, lastHitAt: 0,
     kills: 0, deaths: 0, hammerAt: 0, hammerHit: new Set(), respawnTimer: null,
   };
   ws.isAlive = true;
@@ -260,4 +303,4 @@ setInterval(() => {
   }
 }, 30000);
 
-server.listen(PORT, () => console.log("Game server running on port " + PORT));
+server.listen(PORT, () => console.log("Game server v" + SERVER_VERSION + " running on port " + PORT));
