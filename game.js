@@ -1,8 +1,5 @@
 import * as THREE from "three";
-
-// ================= ONLINE SETTINGS =================
-// Paste your Render server address here. It must start with wss:// (not https://)
-const SERVER_URL = "wss://canyonhighschoolgame.onrender.com";
+import { SERVER_URL } from "./config.js"; // your Render address lives in config.js
 
 // ================= SCENE =================
 const scene = new THREE.Scene();
@@ -336,6 +333,8 @@ const BEAM_HIT_RADIUS = 1.4;
 const BEAM_LIFE = 45; // frames a beam stays visible
 const PHONE_VIEW = { x: 0.38, y: -0.36, z: -0.8 }; // where the phone sits in first person
 const NET_RATE = 50; // ms between position updates sent online (20 per second)
+const SERVER_VERSION = 3; // must match server.js (used to warn you if the server is old)
+const LAST_HIT_WINDOW = 10000; // ms: switching teachers gives the kill to whoever hit you in this time
 
 // ----- BOT SETTINGS (change these to make bots easier or harder) -----
 const BOT_COUNT = 5;
@@ -355,6 +354,11 @@ const BOT_COLORS = [0xe74c3c, 0x3498db, 0xf39c12, 0x1abc9c, 0xe91e63];
 
 // ================= STATE =================
 let playing = false;
+let paused = false; // true while the Esc menu is open
+let pausedAt = 0;
+let inMatch = false; // true once you have spawned in the current match
+let lastAttacker = null; // bot mode: who hit you last
+let lastAttackerTime = 0;
 let dead = false;
 let firstPerson = false;
 let maxHealth = current.health;
@@ -393,7 +397,7 @@ const CAM_MAX = 18; // farthest zoom
 
 // online
 let mode = "bots"; // "bots" or "online"
-let net = null; // { ws, id, code, ready, join }
+let net = null; // { ws, id, code, ready, join, old }
 let lastNetSend = 0;
 const remotes = new Map(); // other online players
 
@@ -404,6 +408,14 @@ const myName =
   NAME_A[Math.floor(Math.random() * NAME_A.length)] + " " +
   NAME_B[Math.floor(Math.random() * NAME_B.length)] + " " +
   (10 + Math.floor(Math.random() * 90));
+
+// Asks the browser to capture the mouse (it can refuse right after Esc, so errors are ignored)
+function lockPointer() {
+  try {
+    const r = renderer.domElement.requestPointerLock();
+    if (r && r.catch) r.catch(() => {});
+  } catch (e) {}
+}
 
 // ================= PLAYER LOOK (picture + camera mode) =================
 const BODY_HEIGHT = 2.2; // height of the cutout picture
@@ -653,8 +665,7 @@ helpText.style.cssText =
 document.body.appendChild(helpText);
 function setHelp() {
   helpText.textContent =
-    "WASD move | Click shoot | Right-click shield | Q dash | E grenade | V hammer | X ult | 7 camera | Scroll zoom | " +
-    (mode === "online" ? "L leave" : "C teacher");
+    "WASD move | Click shoot | Right-click shield | Q dash | E grenade | V hammer | X ult | 7 camera | Scroll zoom | Esc menu";
 }
 setHelp();
 
@@ -671,7 +682,10 @@ function updateRoomHud() {
   }
   const where =
     net.code === "PUBLIC" ? "PUBLIC LOBBY" : "ROOM CODE: " + net.code + " (share it with friends)";
-  roomHud.textContent = where + "   |   Players: " + (remotes.size + 1);
+  roomHud.textContent =
+    where + "   |   Players: " + (remotes.size + 1) +
+    (net.old ? "   |   SERVER OUT OF DATE - redeploy it on Render" : "");
+  roomHud.style.color = net.old ? "#ff6b6b" : "#ffd700";
   roomHud.style.display = "block";
 }
 
@@ -893,6 +907,59 @@ function showStatus(text) {
   statusOverlay.style.display = "flex";
 }
 
+// ----- Pause menu (opens when you press Esc during a match) -----
+const pauseOverlay = document.createElement("div");
+pauseOverlay.style.cssText = MENU_STYLE + "z-index:11;";
+pauseOverlay.style.display = "none";
+pauseOverlay.innerHTML = '<h1 style="margin:0 0 14px;font-size:42px;">PAUSED</h1>';
+const pauseInfo = document.createElement("div");
+pauseInfo.style.cssText =
+  "margin-bottom:26px;font-size:15px;opacity:0.85;text-align:center;max-width:640px;line-height:22px;";
+pauseOverlay.appendChild(pauseInfo);
+
+function makeMenuBtn(text, onClick) {
+  const b = document.createElement("div");
+  b.textContent = text;
+  b.style.cssText = BTN_STYLE + "width:260px;text-align:center;margin-bottom:14px;";
+  b.addEventListener("mouseenter", () => (b.style.background = "#444"));
+  b.addEventListener("mouseleave", () => (b.style.background = "#222"));
+  b.addEventListener("click", onClick);
+  pauseOverlay.appendChild(b);
+  return b;
+}
+const resumeBtn = makeMenuBtn("RESUME", () => resumeGame());
+const teacherBtn = makeMenuBtn("CHOOSE TEACHER", () => {
+  pauseOverlay.style.display = "none";
+  showTeacherScreen();
+});
+const leaveBtn = makeMenuBtn("LEAVE GAME", () => goToModes());
+document.body.appendChild(pauseOverlay);
+
+function showPause() {
+  if (!playing) return;
+  paused = true;
+  pausedAt = performance.now();
+  rightHeld = false;
+  mouseHeld = false;
+  const note = "  |  The match keeps going while this menu is open";
+  if (mode === "online" && net) {
+    pauseInfo.textContent =
+      (net.code === "PUBLIC" ? "Public lobby" : "Room code: " + net.code) +
+      "  |  Players: " + (remotes.size + 1) + note;
+  } else {
+    pauseInfo.textContent = "Bot match" + note;
+  }
+  teacherBtn.style.display = dead ? "none" : "block"; // can't switch while waiting to respawn
+  pauseOverlay.style.display = "flex";
+}
+
+function resumeGame() {
+  paused = false;
+  pauseOverlay.style.display = "none";
+  overlay.style.display = "none";
+  lockPointer();
+}
+
 // ----- Teacher select screen -----
 const overlay = document.createElement("div");
 overlay.style.cssText = MENU_STYLE;
@@ -906,9 +973,21 @@ overlay.appendChild(cardRow);
 const backBtn = document.createElement("div");
 backBtn.textContent = "< Back to modes";
 backBtn.style.cssText = "margin-top:28px;font-size:16px;cursor:pointer;text-decoration:underline;opacity:0.8;";
-backBtn.addEventListener("click", () => goToModes());
+backBtn.addEventListener("click", () => {
+  if (inMatch) {
+    overlay.style.display = "none";
+    showPause();
+  } else {
+    goToModes();
+  }
+});
 overlay.appendChild(backBtn);
 document.body.appendChild(overlay);
+
+function showTeacherScreen() {
+  backBtn.textContent = inMatch ? "< Back to pause menu" : "< Back to modes";
+  overlay.style.display = "flex";
+}
 
 function makeCard(html, locked) {
   const card = document.createElement("div");
@@ -965,7 +1044,30 @@ for (const key in characters) {
 makeCard('<div style="font-size:24px;margin:80px 0;">Coming soon</div>', true);
 makeCard('<div style="font-size:24px;margin:80px 0;">Coming soon</div>', true);
 
+// Bot mode: switching teachers counts as a respawn, so the last bot that hit you gets the kill
+function creditSwitchKill() {
+  if (lastAttacker && performance.now() - lastAttackerTime < LAST_HIT_WINDOW) {
+    lastAttacker.kills++;
+    deaths++;
+    addFeed(lastAttacker.name, "You", "");
+    updateStats();
+  }
+  lastAttacker = null;
+}
+
 function selectCharacter(key) {
+  // can't switch while waiting to respawn: just close the menus and keep playing
+  if (inMatch && dead) {
+    overlay.style.display = "none";
+    pauseOverlay.style.display = "none";
+    paused = false;
+    lockPointer();
+    return;
+  }
+  const switching = inMatch;
+  if (switching && mode === "bots") creditSwitchKill();
+  lastAttacker = null;
+
   current = characters[key];
   player.material.color.setHex(current.color);
   loadBodyPicture(current.picture);
@@ -981,32 +1083,41 @@ function selectCharacter(key) {
   dead = false;
   showPlayerModel();
   deathMsg.style.display = "none";
-  player.position.set(0, 1, 0);
+  if (mode === "bots") {
+    const s = pickSpawn();
+    player.position.set(s[0], 1, s[1]);
+  } else if (!switching) {
+    player.position.set(0, 1, 0); // online: the server sends your real spawn point
+  }
   updateHealthBar();
   overlay.style.display = "none";
+  pauseOverlay.style.display = "none";
+  paused = false;
   playing = true;
+  inMatch = true;
   if (mode === "online" && net) {
-    // the server picks your spawn point and sends it back
-    net.ready = true;
-    netSend({ t: "ready", char: key });
+    if (net.ready) {
+      netSend({ t: "switch", char: key }); // the server respawns you and credits your last attacker
+    } else {
+      net.ready = true;
+      netSend({ t: "ready", char: key });
+    }
   }
-  renderer.domElement.requestPointerLock();
-}
-
-function openSelectScreen() {
-  playing = false;
-  overlay.style.display = "flex";
-  document.exitPointerLock();
+  lockPointer();
 }
 
 // Back to the mode screen from anywhere (closes the online connection too)
 function goToModes(msg) {
   playing = false;
+  paused = false;
+  inMatch = false;
+  lastAttacker = null;
   endUlt();
   meleeStart = 0;
   leaveOnline();
   clearBots();
   overlay.style.display = "none";
+  pauseOverlay.style.display = "none";
   privateOverlay.style.display = "none";
   statusOverlay.style.display = "none";
   modeMsg.textContent = msg || "";
@@ -1026,6 +1137,10 @@ function siphon() {
 
 function damagePlayer(amount, attacker) {
   if (dead || ultPhase !== 0) return; // can't be hurt while using the ult
+  if (attacker && attacker.name) {
+    lastAttacker = attacker; // remembered so switching teachers can credit the kill
+    lastAttackerTime = performance.now();
+  }
   if (shieldUp) amount *= 1 - current.shieldBlock; // shield blocks 85%
   // the blue bonus shield soaks damage first
   const soak = Math.min(bonusShield, amount);
@@ -1035,6 +1150,7 @@ function damagePlayer(amount, attacker) {
   if (playerHealth <= 0) {
     playerHealth = 0;
     dead = true;
+    lastAttacker = null;
     deaths++;
     updateStats();
     dashFrames = 0;
@@ -1066,19 +1182,39 @@ const keys = {};
 addEventListener("keydown", (e) => {
   keys[e.code] = true;
 
+  // Esc closes the pause menu (ignored for a moment so the Esc that opened it doesn't close it)
+  if (
+    e.code === "Escape" &&
+    paused &&
+    pauseOverlay.style.display === "flex" &&
+    performance.now() - pausedAt > 400
+  ) {
+    resumeGame();
+    return;
+  }
+  // Esc when the mouse is already free (for example a failed relock) also opens the menu
+  if (
+    e.code === "Escape" &&
+    playing &&
+    !paused &&
+    !document.pointerLockElement &&
+    overlay.style.display === "none"
+  ) {
+    showPause();
+    return;
+  }
+
   // 7 = switch between first person and third person
   if ((e.code === "Digit7" || e.code === "Numpad7") && !e.repeat && ultPhase === 0) {
     firstPerson = !firstPerson;
     showPlayerModel();
   }
 
-  if (!playing || dead || ultPhase !== 0 || e.repeat) return;
+  if (!playing || dead || paused || ultPhase !== 0 || e.repeat) return;
   if (e.code === "KeyQ") dash();
   if (e.code === "KeyE") throwGrenade();
   if (e.code === "KeyV") melee();
   if (e.code === "KeyX") startUlt();
-  if (e.code === "KeyC" && mode === "bots") openSelectScreen();
-  if (e.code === "KeyL" && mode === "online") goToModes();
 });
 addEventListener("keyup", (e) => (keys[e.code] = false));
 
@@ -1086,7 +1222,7 @@ addEventListener("keyup", (e) => (keys[e.code] = false));
 addEventListener(
   "wheel",
   (e) => {
-    if (!playing || ultPhase !== 0) return;
+    if (!playing || paused || ultPhase !== 0) return;
     camDistTarget += Math.max(-2, Math.min(2, e.deltaY * 0.01));
     camDistTarget = Math.max(CAM_MIN, Math.min(CAM_MAX, camDistTarget));
   },
@@ -1100,7 +1236,7 @@ addEventListener("resize", () => {
 });
 
 renderer.domElement.addEventListener("click", () => {
-  if (playing) renderer.domElement.requestPointerLock();
+  if (playing && !paused) lockPointer();
 });
 addEventListener("mousemove", (e) => {
   if (document.pointerLockElement && ultPhase !== 1) {
@@ -1112,7 +1248,7 @@ addEventListener("mousemove", (e) => {
 
 // Left click = shoot (or fire a beam during the ult), right click (hold) = shield
 addEventListener("mousedown", (e) => {
-  if (!playing || dead || !document.pointerLockElement) return;
+  if (!playing || dead || paused || !document.pointerLockElement) return;
   if (e.button === 2) {
     rightHeld = true;
     return;
@@ -1134,6 +1270,8 @@ document.addEventListener("pointerlockchange", () => {
   if (!document.pointerLockElement) {
     rightHeld = false;
     mouseHeld = false;
+    // the mouse got released (Esc was pressed): open the pause menu
+    if (playing && !paused && overlay.style.display === "none") showPause();
   }
 });
 
@@ -1269,10 +1407,13 @@ function startBotMode() {
   for (let i = 0; i < BOT_COUNT; i++) makeBot(i);
   kills = 0;
   deaths = 0;
+  inMatch = false;
+  paused = false;
+  lastAttacker = null;
   updateStats();
   setHelp();
   modeOverlay.style.display = "none";
-  overlay.style.display = "flex";
+  showTeacherScreen();
 }
 
 makeModeCard(
@@ -1621,7 +1762,7 @@ function failOnline(msg) {
 
 function startOnline(join) {
   if (SERVER_URL.includes("YOUR-SERVER-NAME")) {
-    const msg = "Online isn't set up yet: paste your Render address into SERVER_URL at the top of game.js.";
+    const msg = "Online isn't set up yet: put your Render address into config.js.";
     modeMsg.textContent = msg;
     privMsg.textContent = msg;
     return;
@@ -1632,11 +1773,14 @@ function startOnline(join) {
   setHelp();
   kills = 0;
   deaths = 0;
+  inMatch = false;
+  paused = false;
+  lastAttacker = null;
   updateStats();
   modeOverlay.style.display = "none";
   privateOverlay.style.display = "none";
 
-  const myNet = { ws: null, id: null, code: "", ready: false, join };
+  const myNet = { ws: null, id: null, code: "", ready: false, join, old: false };
   net = myNet;
   let tries = 0;
 
@@ -1650,7 +1794,7 @@ function startOnline(join) {
     try {
       ws = new WebSocket(SERVER_URL);
     } catch (e) {
-      failOnline("The server address in game.js isn't valid.");
+      failOnline("The server address in config.js isn't valid.");
       return;
     }
     myNet.ws = ws;
@@ -1684,9 +1828,11 @@ function handleNet(m) {
     case "welcome": {
       net.id = m.id;
       net.code = m.code;
+      net.old = m.v !== SERVER_VERSION; // the server is running an older server.js
       for (const p of m.players) addRemote(p);
       statusOverlay.style.display = "none";
-      overlay.style.display = "flex"; // pick your teacher
+      inMatch = false;
+      showTeacherScreen(); // pick your teacher
       updateRoomHud();
       break;
     }
@@ -1846,7 +1992,7 @@ function shoot() {
 }
 
 function tryShoot() {
-  if (!playing || dead || ultPhase !== 0 || shieldUp || meleeStart > 0) return;
+  if (!playing || dead || paused || ultPhase !== 0 || shieldUp || meleeStart > 0) return;
   if (!document.pointerLockElement) return;
   const now = performance.now();
   if (now - lastShot < current.fireDelay) return;
@@ -2130,10 +2276,10 @@ function animate() {
 
   // Shield is up while you hold right click
   shieldUp =
-    playing && !dead && ultPhase === 0 && rightHeld && meleeStart === 0 && !!document.pointerLockElement;
+    playing && !dead && !paused && ultPhase === 0 && rightHeld && meleeStart === 0 && !!document.pointerLockElement;
 
-  // Movement
-  if (playing && !dead && ultPhase === 0) {
+  // Movement (not while the Esc menu is open)
+  if (playing && !dead && !paused && ultPhase === 0) {
     const moveSpeed = shieldUp ? speed * current.shieldSpeed : speed;
     const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
     const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
