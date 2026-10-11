@@ -1,5 +1,6 @@
 import * as THREE from "three";
-
+//==================Online settingsJews=====
+const SERVER_URL = "wss://my-game.onrender.com";
 // ================= SCENE =================
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb);
