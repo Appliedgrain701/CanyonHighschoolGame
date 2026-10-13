@@ -2579,6 +2579,7 @@ function fireApple() {
   const origin = eye.clone().addScaledVector(f, 0.8);
   spawnAppleFx(origin, end);
   netFx("a", [origin.x, origin.y, origin.z, end.x, end.y, end.z]);
+  if (best) playAppleHit();
   if (best && best.bot) damageBot(best.bot, current.appleDamage, "apple", "player");
   else if (best && best.r) netSend({ t: "hit", target: best.r.id, k: "apple" });
   if (appleAmmo <= 0 && appleReload === 0) appleReload = now + current.reloadMs;
@@ -2748,6 +2749,28 @@ function playCardHit() {
   tone(900, 300, 0.07, "square", 0.08, 0);
   tone(1568, 1568, 0.18, "triangle", 0.14, 0.01);
   tone(2093, 2093, 0.22, "triangle", 0.1, 0.07);
+}
+// Ms. Applebee: a sharp, crisp "tick-ting" when an apple lands (short noise snap + high ping)
+function playAppleHit() {
+  const ac = getAudio();
+  if (!ac) return;
+  const n = Math.floor(ac.sampleRate * 0.025);
+  const buf = ac.createBuffer(1, n, ac.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 3);
+  const src = ac.createBufferSource();
+  src.buffer = buf;
+  const hp = ac.createBiquadFilter();
+  hp.type = "highpass";
+  hp.frequency.value = 3000;
+  const g = ac.createGain();
+  g.gain.value = 0.5;
+  src.connect(hp);
+  hp.connect(g);
+  g.connect(ac.destination);
+  src.start();
+  tone(3400, 2600, 0.07, "triangle", 0.16, 0);
+  tone(5200, 4400, 0.05, "sine", 0.09, 0.004);
 }
 function playKillSound() {
   tone(220, 80, 0.25, "sawtooth", 0.14, 0);
