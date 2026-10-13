@@ -758,7 +758,7 @@ helpText.style.cssText =
 document.body.appendChild(helpText);
 function setHelp() {
   helpText.textContent =
-    "WASD move | Click shoot | Right-click shield | Q dash | E grenade | V hammer | X ult | 7 camera | Scroll zoom | Esc menu";
+    "7 camera | Scroll zoom";
 }
 setHelp();
 
