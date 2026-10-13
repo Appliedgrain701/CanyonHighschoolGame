@@ -2657,20 +2657,20 @@ function updateApples(now) {
 const hitMark = document.createElement("div");
 hitMark.style.cssText = "position:fixed;left:50%;top:50%;width:0;height:0;z-index:6;pointer-events:none;opacity:0;";
 const hitBars = [];
-for (const rot of [45, -45]) {
-  for (const off of [0, 1]) {
-    const bar = document.createElement("div");
-    bar.style.cssText = "position:absolute;width:10px;height:3px;left:" + (off ? 9 : -19) + "px;top:-1.5px;transform:rotate(" + (off ? rot : -rot) + "deg);box-shadow:0 0 0 1px #000;";
-    hitMark.appendChild(bar);
-    hitBars.push(bar);
-  }
+for (const ang of [45, 135, 225, 315]) {
+  // four diagonal ticks around the crosshair = an X with the middle left open
+  const bar = document.createElement("div");
+  bar.style.cssText =
+    "position:absolute;left:0;top:0;width:11px;height:3px;transform-origin:0 0;transform:rotate(" + ang + "deg) translate(10px,-1.5px);box-shadow:0 0 0 1px #000;";
+  hitMark.appendChild(bar);
+  hitBars.push(bar);
 }
 document.body.appendChild(hitMark);
 let hitMarkTimer = 0;
 function hitmarker(kill) {
   const col = kill ? "#ff1e1e" : "#ffffff";
   for (const b of hitBars) b.style.background = col;
-  const sc = kill ? 1.5 : 1;
+  const sc = kill ? 2.6 : 1;
   hitMark.style.transition = "none";
   hitMark.style.transform = "scale(" + sc * 1.3 + ")";
   hitMark.style.opacity = "1";
