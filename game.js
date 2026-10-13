@@ -387,7 +387,7 @@ const characters = {
     health: 200,
     speed: 0.17,
     // Weapon: 6 hitscan apples (like Jett's knives)
-    fireDelay: 1000, // ms between apples (1 second)
+    fireDelay: 600, // ms between apples (0.6 seconds)
     apples: 6,
     appleDamage: 40,
     reloadMs: 2000, // reload if you used all 6 without a kill (a kill refills instantly)
@@ -1755,6 +1755,8 @@ function addRemote(p) {
   const hive = makeHive();
   hive.position.set(0.8, 0.1, -0.2);
   mesh.add(hive);
+  const beeGun = makeBeeGun();
+  mesh.add(beeGun);
   const shieldG = makeShield(1.5);
   scene.add(shieldG);
   mesh.position.set(p.x, p.y || 1, p.z);
@@ -1768,6 +1770,8 @@ function addRemote(p) {
     mesh,
     hammer,
     hive,
+    beeGun,
+    beeStart: 0,
     head,
     char: "mahoney",
     spr: null,
@@ -1853,6 +1857,7 @@ function updateRemotes(dt, now) {
       r.shieldG.rotation.y = r.curYaw;
     }
 
+    poseBeeGun(r.beeGun, r.beeStart > 0 ? (now - r.beeStart) / 650 : 2, 0.75, 0.2, -0.45);
     if (r.swingStart > 0) {
       const t = (now - r.swingStart) / MELEE_TIME;
       const tool = r.char === "applebee" ? r.hive : r.hammer;
@@ -2124,8 +2129,10 @@ function handleFx(m) {
       boomAt(new THREE.Vector3(a[0], a[1] + 0.5, a[2]), 2.5);
     }
   } else if (m.k === "c") clearRemoteMines(m.id);
-  else if (m.k === "v") spawnBeeFx(new THREE.Vector3(a[0], a[1], a[2]), new THREE.Vector3(a[3], a[4], a[5]));
-  else if (m.k === "z") {
+  else if (m.k === "v") {
+    r.beeStart = performance.now();
+    spawnBeeFx(new THREE.Vector3(a[0], a[1], a[2]), new THREE.Vector3(a[3], a[4], a[5]));
+  } else if (m.k === "z") {
     addZone(a[0], a[1], a[2], a[3], a[4], false);
     boomAt(new THREE.Vector3(a[0], a[1] + 0.5, a[2]), a[3], 0xffd23f);
   }
@@ -2551,6 +2558,7 @@ function resetApples() {
   appleReload = 0;
   slowUntil = 0;
   lastBee = -99999;
+  beeAnimStart = 0;
   clearMines();
   clearZones();
   viewPhoneImg.material = current.kind === "applebee" ? appleMeshMat : phoneMat;
@@ -2681,12 +2689,98 @@ function checkMines(now) {
 let lastBee = -99999;
 const beeShotGeo = new THREE.SphereGeometry(0.22, 8, 8);
 const beeShotMat = new THREE.MeshBasicMaterial({ color: 0xffd23f });
+const beeSwarm = [];
+const beeBodyGeo = new THREE.SphereGeometry(0.11, 6, 6);
+const beeDarkMat = new THREE.MeshBasicMaterial({ color: 0x222222 });
+// A swarm of little bees spirals along the shot, with a glowing core in the middle
 function spawnBeeFx(from, to) {
-  const m = new THREE.Mesh(beeShotGeo, beeShotMat);
-  m.position.copy(from);
-  scene.add(m);
-  appleFx.push({ sp: m, from, to, t0: performance.now() });
+  const dir = new THREE.Vector3().subVectors(to, from);
+  const len = dir.length();
+  dir.normalize();
+  const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0));
+  if (right.lengthSq() < 0.01) right.set(1, 0, 0);
+  right.normalize();
+  const up = new THREE.Vector3().crossVectors(right, dir).normalize();
+  const bees = [];
+  for (let i = 0; i < 8; i++) {
+    const m = new THREE.Mesh(beeBodyGeo, i % 2 ? beeDarkMat : beeShotMat);
+    scene.add(m);
+    bees.push(m);
+  }
+  beeSwarm.push({ bees, from, to, right, up, t0: performance.now(), dur: Math.max(140, Math.min(320, len * 5)) });
+  const core = new THREE.Mesh(beeShotGeo, beeShotMat);
+  core.scale.setScalar(1.3);
+  core.position.copy(from);
+  scene.add(core);
+  appleFx.push({ sp: core, from, to, t0: performance.now() });
 }
+
+// ----- Bee gun model + animation (first person, third person, other players) -----
+let beeAnimStart = 0;
+function makeBeeGun() {
+  const g = new THREE.Group();
+  const yellow = new THREE.MeshStandardMaterial({ color: 0xf5c518 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x2a2a2a });
+  const amber = new THREE.MeshStandardMaterial({ color: 0xe0a526 });
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 0.9, 12), yellow);
+  barrel.rotation.x = Math.PI / 2;
+  barrel.position.z = -0.35;
+  g.add(barrel);
+  for (const z of [-0.1, -0.35, -0.6]) {
+    const band = new THREE.Mesh(new THREE.CylinderGeometry(0.115, 0.115, 0.07, 12), dark);
+    band.rotation.x = Math.PI / 2;
+    band.position.z = z;
+    g.add(band);
+  }
+  const nozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.08, 0.15, 12), dark);
+  nozzle.rotation.x = Math.PI / 2;
+  nozzle.position.z = -0.85;
+  g.add(nozzle);
+  const radii = [0.2, 0.17, 0.12];
+  for (let i = 0; i < 3; i++) {
+    const seg = new THREE.Mesh(new THREE.SphereGeometry(radii[i], 10, 8), i % 2 ? dark : amber);
+    seg.scale.y = 0.7;
+    seg.position.set(0, 0.18 + i * 0.15, -0.1);
+    g.add(seg);
+  }
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.28, 0.1), dark);
+  grip.position.set(0, -0.2, 0.05);
+  g.add(grip);
+  const hand = new THREE.Mesh(new THREE.SphereGeometry(0.08, 10, 10), skinMat);
+  hand.position.set(0, -0.32, 0.05);
+  g.add(hand);
+  const flash = new THREE.Mesh(
+    new THREE.SphereGeometry(0.22, 10, 10),
+    new THREE.MeshBasicMaterial({ color: 0xffe066, transparent: true, opacity: 0.85 })
+  );
+  flash.position.z = -1.0;
+  flash.visible = false;
+  g.add(flash);
+  g.userData.flash = flash;
+  g.visible = false;
+  return g;
+}
+// p = 0..1 progress of the animation: gun pops up, kicks back with a muzzle flash, lowers away
+function poseBeeGun(gun, p, bx, by, bz) {
+  if (p < 0 || p >= 1) {
+    gun.visible = false;
+    return;
+  }
+  const e = p < 0.1 ? p / 0.1 : p > 0.75 ? (1 - p) / 0.25 : 1;
+  const kick = Math.max(0, 1 - p / 0.35);
+  const rc = kick * kick;
+  gun.visible = true;
+  gun.position.set(bx, by - (1 - e) * 0.5, bz + rc * 0.18);
+  gun.rotation.x = -(1 - e) * 0.9 + rc * 0.35;
+  const fl = gun.userData.flash;
+  fl.visible = p < 0.14;
+  fl.scale.setScalar(0.6 + (1 - p / 0.14) * 0.9);
+}
+const beeGunTP = makeBeeGun();
+player.add(beeGunTP);
+const beeGunFP = makeBeeGun();
+beeGunFP.scale.setScalar(0.6);
+viewRoot.add(beeGunFP);
 
 const zones = [];
 function makeZoneMesh(x, y, z, r) {
@@ -2754,6 +2848,7 @@ function fireBeeGun() {
   const now = performance.now();
   if (now - lastBee < current.beeCooldown) return;
   lastBee = now;
+  beeAnimStart = now;
   viewKick = 1;
   const eye = new THREE.Vector3(player.position.x, player.position.y + 0.7, player.position.z);
   const f = aimDirection(eye);
@@ -2812,6 +2907,22 @@ function updateApples(now) {
     const a = now / 700 + (i * Math.PI * 2) / 6;
     sp.position.set(Math.cos(a) * 1.3, 0.1 + Math.sin(now / 400 + i) * 0.1, Math.sin(a) * 1.3);
     sp.scale.set(0.55 * appleAspect, 0.55, 1);
+  }
+  for (let i = beeSwarm.length - 1; i >= 0; i--) {
+    const sw = beeSwarm[i];
+    const t = (now - sw.t0) / sw.dur;
+    if (t >= 1) {
+      for (const b of sw.bees) scene.remove(b);
+      beeSwarm.splice(i, 1);
+      continue;
+    }
+    sw.bees.forEach((b, k) => {
+      const tt = Math.max(0, t - k * 0.012);
+      b.position.lerpVectors(sw.from, sw.to, tt);
+      const a = tt * 14 + k * 0.9;
+      const rad = 0.35 + 0.25 * Math.sin(k + tt * 20);
+      b.position.addScaledVector(sw.right, Math.cos(a) * rad).addScaledVector(sw.up, Math.sin(a) * rad);
+    });
   }
   for (let i = appleFx.length - 1; i >= 0; i--) {
     const f = appleFx[i];
@@ -3025,11 +3136,15 @@ function animate() {
   hammerFP.visible = swinging && !hvB;
   hiveTP.visible = swinging && hvB;
   hiveFP.visible = swinging && hvB;
+  const beeP = beeAnimStart > 0 ? (now - beeAnimStart) / 650 : 2;
+  const fpB = isFirstPerson();
+  poseBeeGun(beeGunFP, fpB ? beeP : 2, 0.32, -0.3, -0.6);
+  poseBeeGun(beeGunTP, fpB ? 2 : beeP, 0.75, 0.2, -0.45);
 
   // First person hands / shield
   const fp = isFirstPerson();
   viewRoot.visible = playing && !dead && fp;
-  viewPhone.visible = ultPhase === 0 && !swinging;
+  viewPhone.visible = ultPhase === 0 && !swinging && !(beeP < 1);
   shieldFP.visible = shieldUp;
   shieldWorld.visible = shieldUp && !fp;
   shieldDiscMat.opacity = 0.3 + 0.08 * Math.sin(now / 120);
