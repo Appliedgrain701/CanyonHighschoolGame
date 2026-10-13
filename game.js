@@ -373,9 +373,9 @@ const characters = {
     // X: ultimate "Balding"
     ultCost: 100, // charge needed
     ultStartCharge: 0, // set to 100 to test the ult right away
-    ultPassivePerSec: 1, // charge from just playing
-    ultPerDamage: 0.1, // charge per point of damage dealt
-    ultPerKill: 10, // charge per kill
+    ultPassivePerSec: 0.7, // charge from just playing (lower = harder to get)
+    ultPerDamage: 0.07, // charge per point of damage dealt
+    ultPerKill: 8, // charge per kill
     ultDamage: 150, // damage per beam
     ultBeams: 3,
   },
@@ -736,7 +736,10 @@ ultBox.appendChild(ultLabel);
 document.body.appendChild(ultBox);
 
 const CROSS_NORMAL =
-  "position:fixed;top:50%;left:50%;width:8px;height:8px;margin:-4px 0 0 -4px;background:#fff;border:1px solid #000;border-radius:50%;";
+  "position:fixed;top:50%;left:50%;width:28px;height:28px;margin:-14px 0 0 -14px;pointer-events:none;z-index:5;filter:drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000);background:" +
+  "linear-gradient(#fff,#fff) 13px 0/2px 9px no-repeat,linear-gradient(#fff,#fff) 13px 19px/2px 9px no-repeat," +
+  "linear-gradient(#fff,#fff) 0 13px/9px 2px no-repeat,linear-gradient(#fff,#fff) 19px 13px/9px 2px no-repeat," +
+  "radial-gradient(#fff 0 1.5px,transparent 2px) center/28px 28px no-repeat;";
 const CROSS_ULT =
   "position:fixed;top:50%;left:50%;width:46px;height:46px;margin:-23px 0 0 -23px;border:3px solid #ffd54a;border-radius:50%;box-shadow:0 0 14px #ffd54a, inset 0 0 14px #ffd54a;";
 const crosshair = document.createElement("div");
@@ -1546,7 +1549,10 @@ function isAlive(e) {
 function damageBot(bot, amount, how, attacker) {
   if (!bot.alive) return;
   const dealt = Math.min(amount, bot.health);
-  if (attacker === "player") addUltCharge(dealt * current.ultPerDamage);
+  if (attacker === "player") {
+    addUltCharge(dealt * current.ultPerDamage);
+    if (dealt > 0) hitmarker(false);
+  }
   bot.health -= amount;
   bot.flash = 0.08;
   if (bot.health <= 0) {
@@ -1558,6 +1564,7 @@ function damageBot(bot, amount, how, attacker) {
       kills++;
       addUltCharge(current.ultPerKill);
       refillApples();
+      hitmarker(true);
       siphon();
       showKillBanner(bot.name, how); // elimination banner
       addFeed("You", bot.name, how);
@@ -1986,7 +1993,10 @@ function handleNet(m) {
       break;
     }
     case "hp": {
-      if (m.by === net.id) addUltCharge(m.dealt * current.ultPerDamage);
+      if (m.by === net.id) {
+        addUltCharge(m.dealt * current.ultPerDamage);
+        if (m.dealt > 0) hitmarker(false);
+      }
       if (m.id === net.id) {
         playerHealth = m.hp;
         bonusShield = m.bonus || 0;
@@ -2010,6 +2020,7 @@ function handleNet(m) {
         kills++;
         addUltCharge(current.ultPerKill);
         refillApples();
+        hitmarker(true);
         showKillBanner(vName, m.how); // elimination banner
         addFeedText("SIPHON: full health + " + BONUS_SHIELD + " blue shield");
         addFeed("You", vName, m.how);
@@ -2642,6 +2653,79 @@ function updateApples(now) {
   }
 }
 
+// ================= CROSSHAIR, HITMARKERS, SOUNDS =================
+const hitMark = document.createElement("div");
+hitMark.style.cssText = "position:fixed;left:50%;top:50%;width:0;height:0;z-index:6;pointer-events:none;opacity:0;";
+const hitBars = [];
+for (const rot of [45, -45]) {
+  for (const off of [0, 1]) {
+    const bar = document.createElement("div");
+    bar.style.cssText = "position:absolute;width:10px;height:3px;left:" + (off ? 9 : -19) + "px;top:-1.5px;transform:rotate(" + (off ? rot : -rot) + "deg);box-shadow:0 0 0 1px #000;";
+    hitMark.appendChild(bar);
+    hitBars.push(bar);
+  }
+}
+document.body.appendChild(hitMark);
+let hitMarkTimer = 0;
+function hitmarker(kill) {
+  const col = kill ? "#ff1e1e" : "#ffffff";
+  for (const b of hitBars) b.style.background = col;
+  const sc = kill ? 1.5 : 1;
+  hitMark.style.transition = "none";
+  hitMark.style.transform = "scale(" + sc * 1.3 + ")";
+  hitMark.style.opacity = "1";
+  void hitMark.offsetWidth;
+  hitMark.style.transition = "opacity 0.35s, transform 0.2s";
+  hitMark.style.transform = "scale(" + sc + ")";
+  clearTimeout(hitMarkTimer);
+  hitMarkTimer = setTimeout(() => (hitMark.style.opacity = "0"), kill ? 450 : 150);
+  if (kill) playKillSound();
+}
+function updateCrosshair() {
+  if (ultPhase === 2) return; // the ult has its own gold ring
+  crosshair.style.display = playing && !dead && !paused && ultPhase === 0 ? "block" : "none";
+}
+
+// Little synthesized sounds (no sound files needed)
+let audioCtx = null;
+function getAudio() {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+  } catch (e) { return null; }
+  return audioCtx;
+}
+function tone(freq, freq2, dur, type, vol, delay) {
+  const ac = getAudio();
+  if (!ac) return;
+  const t = ac.currentTime + (delay || 0);
+  const o = ac.createOscillator();
+  const g = ac.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(freq, t);
+  o.frequency.exponentialRampToValueAtTime(freq2, t + dur);
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g);
+  g.connect(ac.destination);
+  o.start(t);
+  o.stop(t + dur + 0.02);
+}
+// Mr. Mahoney: a card landing on someone ("thwip" + bright double ding)
+let lastCardSound = 0;
+function playCardHit() {
+  const now = performance.now();
+  if (now - lastCardSound < 50) return; // three cards at once = one sound
+  lastCardSound = now;
+  tone(900, 300, 0.07, "square", 0.08, 0);
+  tone(1568, 1568, 0.18, "triangle", 0.14, 0.01);
+  tone(2093, 2093, 0.22, "triangle", 0.1, 0.07);
+}
+function playKillSound() {
+  tone(220, 80, 0.25, "sawtooth", 0.14, 0);
+  tone(1318, 1318, 0.3, "triangle", 0.12, 0.05);
+}
+
 // ================= GAME LOOP =================
 let lastFrame = performance.now();
 
@@ -2719,6 +2803,7 @@ function animate() {
   // Other online players
   updateRemotes(dt, now);
   updateApples(now);
+  updateCrosshair();
   checkMines(now);
 
   // Ban hammer swing
@@ -2817,6 +2902,7 @@ function animate() {
         }
       }
       if (hitBot) {
+        playCardHit();
         damageBot(hitBot, b.userData.damage, undefined, "player");
         scene.remove(b);
         bullets.splice(i, 1);
@@ -2831,6 +2917,7 @@ function animate() {
         }
       }
       if (hitRemote) {
+        playCardHit();
         netSend({ t: "hit", target: hitRemote.id, k: "phone" });
         scene.remove(b);
         bullets.splice(i, 1);
