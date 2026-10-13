@@ -2004,7 +2004,7 @@ function handleFx(m) {
   const r = remotes.get(m.id);
   if (!r) return;
   const a = m.a || [];
-  if (m.k === "p") fireBurst(a[0], a[1], a[2], a[3], characters.mahoney, true);
+  if (m.k === "p") fireBurst(a[0], a[1], a[2], a[3], characters.mahoney, true, a[4] === undefined ? 1 : a[4]);
   else if (m.k === "g") spawnGrenade(a[0], a[1], a[2], a[3], a[4], a[5], true);
   else if (m.k === "b") spawnBeam(new THREE.Vector3(a[0], a[1], a[2]), new THREE.Vector3(a[3], a[4], a[5]));
   else if (m.k === "u") addFeedText(r.name + " is BALDING!");
@@ -2017,7 +2017,7 @@ const PHONE_SIZE = 0.9; // length of the flying phone
 const PHONE_SPIN = 0.4; // spin speed: 0 = no spin
 
 // fx = true means it is another player's phone: it flies but does no damage on your screen
-function fireBurst(px, pz, yw, pt, ch, fx) {
+function fireBurst(px, pz, yw, pt, ch, fx, py = 1) {
   for (let i = 0; i < ch.burst; i++) {
     // Even spread: the phones fan out with the same gap every time
     const offset = (i - (ch.burst - 1) / 2) * ch.spread;
@@ -2031,7 +2031,7 @@ function fireBurst(px, pz, yw, pt, ch, fx) {
 
     const b = new THREE.Mesh(phoneGeo, phoneMat);
     b.scale.set(PHONE_SIZE * phoneAspect, PHONE_SIZE, 1);
-    b.position.set(px + dir.x * 0.7, 1.5 + dir.y * 0.7, pz + dir.z * 0.7);
+    b.position.set(px + dir.x * 0.7, py + 0.5 + dir.y * 0.7, pz + dir.z * 0.7);
     // Lay the phone flat like a thrown card
     b.rotation.set(-Math.PI / 2 + pt, angle, 0, "YXZ");
 
@@ -2046,8 +2046,8 @@ function fireBurst(px, pz, yw, pt, ch, fx) {
 
 function shoot() {
   viewKick = 1; // hand recoil in first person
-  fireBurst(player.position.x, player.position.z, yaw, pitch, current, false);
-  netFx("p", [player.position.x, player.position.z, yaw, pitch]);
+  fireBurst(player.position.x, player.position.z, yaw, pitch, current, false, player.position.y);
+  netFx("p", [player.position.x, player.position.z, yaw, pitch, player.position.y]);
 }
 
 function tryShoot() {
@@ -2117,8 +2117,9 @@ function throwGrenade() {
   const vx = -Math.sin(yaw) * 0.3;
   const vy = 0.2 + pitch * 0.25;
   const vz = -Math.cos(yaw) * 0.3;
-  spawnGrenade(x, 1.8, z, vx, vy, vz, false);
-  netFx("g", [x, 1.8, z, vx, vy, vz]);
+  const gy = player.position.y + 0.8;
+  spawnGrenade(x, gy, z, vx, vy, vz, false);
+  netFx("g", [x, gy, z, vx, vy, vz]);
 }
 
 function explode(pos, fx) {
