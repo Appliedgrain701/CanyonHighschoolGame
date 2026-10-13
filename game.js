@@ -387,10 +387,16 @@ const characters = {
     health: 200,
     speed: 0.17,
     // Weapon: 6 hitscan apples (like Jett's knives)
-    fireDelay: 300, // ms between apples
+    fireDelay: 1000, // ms between apples (1 second)
     apples: 6,
     appleDamage: 40,
     reloadMs: 2000, // reload if you used all 6 without a kill (a kill refills instantly)
+    // Right click: bee gun (hitscan, medium explosion, then a sticky yellow zone)
+    beeCooldown: 8000,
+    beeDamage: 50,
+    beeRadius: 3.5,
+    zoneDamage: 15, // the zone's single tick of damage
+    zoneSeconds: 5,
     // E: landmine
     grenadeCooldown: 6000,
     mineDamage: 75,
@@ -408,7 +414,7 @@ const characters = {
     ultPerKill: 8,
     desc:
       "Health: 200<br>Weapon: 6 Apples (40 dmg each, hitscan)<br>No kill with all 6 = 2s reload<br>" +
-      "A kill = instant refill<br>E: Apple Landmine (75 dmg, 6s)<br>V: Beehive (50 dmg + slow)<br>X: coming soon",
+      "A kill = instant refill<br>Right Click: Bee Gun (50 dmg blast + sticky zone)<br>E: Apple Landmine (75 dmg, 6s)<br>V: Beehive (50 dmg + slow)<br>X: coming soon",
   },
 };
 let current = characters.mahoney;
@@ -423,7 +429,7 @@ const BEAM_HIT_RADIUS = 1.4;
 const BEAM_LIFE = 45; // frames a beam stays visible
 const PHONE_VIEW = { x: 0.38, y: -0.36, z: -0.8 }; // where the phone sits in first person
 const NET_RATE = 50; // ms between position updates sent online (20 per second)
-const SERVER_VERSION = 4; // must match server.js (used to warn you if the server is old)
+const SERVER_VERSION = 5; // must match server.js (used to warn you if the server is old)
 const LAST_HIT_WINDOW = 10000; // ms: switching teachers gives the kill to whoever hit you in this time
 
 // ----- BOT SETTINGS (change these to make bots easier or harder) -----
@@ -702,7 +708,7 @@ feed.style.cssText =
   "pointer-events:none;z-index:5;font:bold 15px sans-serif;";
 document.body.appendChild(feed);
 function addFeed(killer, victim, how) {
-  const verb = { banned: "BANNED", beam: "BALDED", apple: "APPLED", mine: "BLEW UP", hive: "BEEHIVED" }[how] || "eliminated";
+  const verb = { banned: "BANNED", beam: "BALDED", apple: "APPLED", mine: "BLEW UP", hive: "BEEHIVED", bee: "STUNG" }[how] || "eliminated";
   const row = document.createElement("div");
   row.style.cssText =
     "background:rgba(0,0,0,0.6);color:#fff;padding:4px 10px;border-radius:4px;border-left:4px solid #ffd700;";
@@ -856,6 +862,7 @@ function showKillBanner(victim, how) {
   else if (how === "apple") bannerSub.textContent = victim + " got APPLED";
   else if (how === "mine") bannerSub.textContent = victim + " got BLOWN UP";
   else if (how === "hive") bannerSub.textContent = victim + " got BEEHIVED";
+  else if (how === "bee") bannerSub.textContent = victim + " got STUNG";
   else bannerSub.textContent = victim + " eliminated";
   banner.style.opacity = "1";
   banner.style.transform = "translateX(-50%) scale(1)";
@@ -1348,6 +1355,10 @@ addEventListener("mousemove", (e) => {
 addEventListener("mousedown", (e) => {
   if (!playing || dead || paused || !document.pointerLockElement) return;
   if (e.button === 2) {
+    if (current.kind === "applebee") {
+      fireBeeGun();
+      return;
+    }
     rightHeld = true;
     return;
   }
@@ -2072,8 +2083,9 @@ function handleNet(m) {
       break;
     }
     case "slow": {
-      slowUntil = performance.now() + (m.ms || 2000);
-      addFeedText("SLOWED by a beehive!");
+      const nowS = performance.now();
+      if (nowS >= slowUntil) addFeedText("SLOWED!");
+      slowUntil = Math.max(slowUntil, nowS + (m.ms || 2000));
       break;
     }
     case "error": {
@@ -2112,6 +2124,11 @@ function handleFx(m) {
       boomAt(new THREE.Vector3(a[0], a[1] + 0.5, a[2]), 2.5);
     }
   } else if (m.k === "c") clearRemoteMines(m.id);
+  else if (m.k === "v") spawnBeeFx(new THREE.Vector3(a[0], a[1], a[2]), new THREE.Vector3(a[3], a[4], a[5]));
+  else if (m.k === "z") {
+    addZone(a[0], a[1], a[2], a[3], a[4], false);
+    boomAt(new THREE.Vector3(a[0], a[1] + 0.5, a[2]), a[3], 0xffd23f);
+  }
 }
 
 // ================= MR. MAHONEY: PHONE BURST =================
@@ -2533,7 +2550,9 @@ function resetApples() {
   appleAmmo = current.apples || 6;
   appleReload = 0;
   slowUntil = 0;
+  lastBee = -99999;
   clearMines();
+  clearZones();
   viewPhoneImg.material = current.kind === "applebee" ? appleMeshMat : phoneMat;
 }
 function refillApples() {
@@ -2605,10 +2624,10 @@ function makeMineMesh(x, y, z) {
   scene.add(g);
   return g;
 }
-function boomAt(pos, radius) {
+function boomAt(pos, radius, color = 0xff3b3b) {
   const boom = new THREE.Mesh(
     new THREE.SphereGeometry(radius, 16, 16),
-    new THREE.MeshBasicMaterial({ color: 0xff3b3b, transparent: true, opacity: 0.5 })
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.5 })
   );
   boom.position.copy(pos);
   scene.add(boom);
@@ -2655,6 +2674,128 @@ function checkMines(now) {
     netFx("x", [m.x, m.y, m.z]);
     for (const bot of bots) if (bot.alive && near(bot.mesh.position, 2.5)) damageBot(bot, current.mineDamage, "mine", "player");
     for (const r of remotes.values()) if (r.alive && near(r.mesh.position, 2.5)) netSend({ t: "hit", target: r.id, k: "mine" });
+  }
+}
+
+// ----- Bee gun (right click) + sticky yellow zone -----
+let lastBee = -99999;
+const beeShotGeo = new THREE.SphereGeometry(0.22, 8, 8);
+const beeShotMat = new THREE.MeshBasicMaterial({ color: 0xffd23f });
+function spawnBeeFx(from, to) {
+  const m = new THREE.Mesh(beeShotGeo, beeShotMat);
+  m.position.copy(from);
+  scene.add(m);
+  appleFx.push({ sp: m, from, to, t0: performance.now() });
+}
+
+const zones = [];
+function makeZoneMesh(x, y, z, r) {
+  const g = new THREE.Group();
+  const disc = new THREE.Mesh(
+    new THREE.CircleGeometry(r, 32),
+    new THREE.MeshBasicMaterial({ color: 0xffd400, transparent: true, opacity: 0.45, side: THREE.DoubleSide, depthWrite: false })
+  );
+  disc.rotation.x = -Math.PI / 2;
+  disc.position.y = 0.06;
+  g.add(disc);
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(r - 0.25, r, 32),
+    new THREE.MeshBasicMaterial({ color: 0xff9d00, transparent: true, opacity: 0.8, side: THREE.DoubleSide })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.07;
+  g.add(ring);
+  g.position.set(x, y, z);
+  g.userData.disc = disc;
+  scene.add(g);
+  return g;
+}
+function addZone(x, y, z, r, durMs, owner) {
+  zones.push({ g: makeZoneMesh(x, y, z, r), x, y, z, r, until: performance.now() + durMs, owner, hit: new Set(), nextSlow: 0 });
+}
+function clearZones() {
+  for (const zn of zones) if (zn.owner) { scene.remove(zn.g); }
+  for (let i = zones.length - 1; i >= 0; i--) if (zones[i].owner) zones.splice(i, 1);
+}
+function updateZones(now) {
+  const active = playing && !dead && current.kind === "applebee";
+  for (let i = zones.length - 1; i >= 0; i--) {
+    const zn = zones[i];
+    const left = zn.until - now;
+    if (left <= 0) {
+      scene.remove(zn.g);
+      zones.splice(i, 1);
+      continue;
+    }
+    zn.g.userData.disc.material.opacity = Math.min(0.45, (left / 1000) * 0.45) * (0.85 + 0.15 * Math.sin(now / 150));
+    if (!zn.owner || !active) continue;
+    const inside = (p) => Math.hypot(p.x - zn.x, p.z - zn.z) < zn.r && Math.abs(p.y - 1 - zn.y) < 2;
+    const doSlow = now >= zn.nextSlow;
+    if (doSlow) zn.nextSlow = now + 300;
+    for (const bot of bots) {
+      if (!bot.alive || !inside(bot.mesh.position)) continue;
+      bot.slowUntil = now / 1000 + 0.6;
+      if (!zn.hit.has(bot)) {
+        zn.hit.add(bot);
+        damageBot(bot, current.zoneDamage, "bee", "player"); // the zone's one tick of damage
+      }
+    }
+    for (const r of remotes.values()) {
+      if (!r.alive || !inside(r.mesh.position)) continue;
+      if (!zn.hit.has(r.id)) {
+        zn.hit.add(r.id);
+        netSend({ t: "hit", target: r.id, k: "beezone" });
+      } else if (doSlow) netSend({ t: "hit", target: r.id, k: "beeslow" });
+    }
+  }
+}
+
+function fireBeeGun() {
+  const now = performance.now();
+  if (now - lastBee < current.beeCooldown) return;
+  lastBee = now;
+  viewKick = 1;
+  const eye = new THREE.Vector3(player.position.x, player.position.y + 0.7, player.position.z);
+  const f = aimDirection(eye);
+  let wall = 120;
+  const p = new THREE.Vector3();
+  for (let d = 0.5; d < 120; d += 0.5) {
+    p.copy(eye).addScaledVector(f, d);
+    if (p.y < 0 || insideWall(p)) { wall = d; break; }
+  }
+  const cand = [];
+  for (const bot of bots) if (bot.alive) cand.push({ bot, pos: bot.mesh.position });
+  for (const r of remotes.values()) if (r.alive) cand.push({ r, pos: r.mesh.position });
+  let bestT = wall;
+  let hitTarget = false;
+  for (const c of cand) {
+    const t = new THREE.Vector3().subVectors(c.pos, eye).dot(f);
+    if (t <= 0 || t >= bestT) continue;
+    if (eye.clone().addScaledVector(f, t).distanceTo(c.pos) < 1.1) { bestT = t; hitTarget = true; }
+  }
+  if (!hitTarget) bestT = Math.max(1, bestT - 0.4); // stop just in front of a wall / the ground
+  const end = eye.clone().addScaledVector(f, bestT);
+  end.y = Math.max(0.2, end.y);
+  const origin = eye.clone().addScaledVector(f, 0.8);
+  spawnBeeFx(origin, end);
+  netFx("v", [origin.x, origin.y, origin.z, end.x, end.y, end.z]);
+  playBeeShot();
+
+  const gy = groundAt(end.x, end.z, end.y);
+  boomAt(end, current.beeRadius, 0xffd23f);
+  addZone(end.x, gy, end.z, current.beeRadius, current.zoneSeconds * 1000, true);
+  netFx("z", [end.x, gy, end.z, current.beeRadius, current.zoneSeconds * 1000]);
+
+  // medium explosion: everyone close to where it landed takes the full 50
+  for (const bot of bots) {
+    if (bot.alive && bot.mesh.position.distanceTo(end) < current.beeRadius + 0.8) {
+      damageBot(bot, current.beeDamage, "bee", "player");
+    }
+  }
+  for (const r of remotes.values()) {
+    if (r.alive && r.mesh.position.distanceTo(end) < current.beeRadius + 0.8) {
+      netSend({ t: "hit", target: r.id, k: "bee" });
+    }
   }
 }
 
@@ -2772,6 +2913,11 @@ function playAppleHit() {
   tone(3400, 2600, 0.07, "triangle", 0.16, 0);
   tone(5200, 4400, 0.05, "sine", 0.09, 0.004);
 }
+function playBeeShot() {
+  tone(150, 70, 0.28, "sawtooth", 0.12, 0);
+  tone(520, 180, 0.14, "square", 0.05, 0.02);
+  tone(95, 60, 0.35, "sawtooth", 0.1, 0.12);
+}
 function playKillSound() {
   tone(220, 80, 0.25, "sawtooth", 0.14, 0);
   tone(1318, 1318, 0.3, "triangle", 0.12, 0.05);
@@ -2854,6 +3000,7 @@ function animate() {
   // Other online players
   updateRemotes(dt, now);
   updateApples(now);
+  updateZones(now);
   updateCrosshair();
   checkMines(now);
 
@@ -3055,6 +3202,8 @@ function animate() {
       (appleReload > 0
         ? "RELOADING " + Math.max(0, (appleReload - now) / 1000).toFixed(1) + "s"
         : "Apples: " + appleAmmo + "/" + current.apples) +
+      "<br>" +
+      cooldownText("Bee Gun", "Right Click", lastBee, current.beeCooldown) +
       "<br>" +
       cooldownText("Landmine", "E", lastGrenade, current.grenadeCooldown) +
       " [" + mines.length + "/" + current.maxMines + " placed]" +
