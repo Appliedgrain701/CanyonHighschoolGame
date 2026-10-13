@@ -186,30 +186,12 @@ function makeGoalpost(z) {
 makeGoalpost(-44);
 makeGoalpost(44);
 
-// ----- Bleachers (decoration, outside the side fences) -----
-const bleacherColors = [0x9aa3ad, 0x7b858f];
-function makeBleachers(side) {
-  // side: -1 = left, 1 = right
-  for (let i = 0; i < 8; i++) {
-    const h = 1.2 * (i + 1); // each row is taller than the one before
-    const row = new THREE.Mesh(
-      new THREE.BoxGeometry(1.6, h, 60),
-      new THREE.MeshStandardMaterial({ color: bleacherColors[i % 2] })
-    );
-    row.position.set(side * (24.8 + i * 1.6), h / 2, 0);
-    scene.add(row);
-  }
-}
-makeBleachers(-1);
-makeBleachers(1);
 
 // ----- Walls and cover -----
 // x/z = center, w = width, d = depth, h = height (default 6), color = hex
 // Add  photo: "hall.jpg"  to any wall to put a photo on it.
 const walls = [
   // fences around the field (side fences are low so you can see the bleachers)
-  { x: -23, z: 0, w: 2, d: 96, h: 2.5, color: 0x444444 },
-  { x: 23, z: 0, w: 2, d: 96, h: 2.5, color: 0x444444 },
   { x: 0, z: -47, w: 48, d: 2, h: 6, color: 0x444444 },
   { x: 0, z: 47, w: 48, d: 2, h: 6, color: 0x444444 },
   // cover (equipment and benches)
@@ -221,13 +203,41 @@ const walls = [
   { x: 14, z: 0, w: 2, d: 6, h: 3, color: 0x888888 },
 ];
 
+// ===== walkable bleachers, announcer room, stairs =====
+function fence(x, z0, z1) { walls.push({ x, z: (z0 + z1) / 2, w: 2, d: z1 - z0, h: 2.5, color: 0x444444 }); }
+for (const sx of [-23, 23]) { fence(sx, -48, -39); fence(sx, -33, -6); fence(sx, 6, 33); fence(sx, 39, 48); }
+for (const side of [-1, 1]) {
+  for (let i = 0; i < 8; i++) {
+    const top = 0.5 * (i + 1);
+    walls.push({ x: side * (24.8 + i * 1.6), z: 0, w: 1.6, d: 60, y0: i < 4 ? 0 : top - 0.3, h: top, color: i % 2 ? 0x7b858f : 0x9aa3ad });
+  }
+  walls.push({ x: side * 37, z: 0, w: 0.4, d: 60, h: 4.6, color: 0x555555 });
+  const bl = new THREE.PointLight(0xffe0b0, 1.2, 14); bl.position.set(side * 33.5, 1.5, 0); scene.add(bl);
+}
+const RY = 6; // announcer room floor height
+walls.push(
+  { x: -42.5, z: 0, w: 10, d: 24, y0: 5.7, h: RY, color: 0x3a3a4a },
+  { x: -47.25, z: 0, w: 0.5, d: 24, y0: RY, h: 9, color: 0x2c2c3c },
+  { x: -37.75, z: 0, w: 0.5, d: 24, y0: RY, h: 7, color: 0x2c2c3c },
+  { x: -42.5, z: -12.25, w: 10, d: 0.5, y0: RY, h: 9, color: 0x2c2c3c },
+  { x: -47, z: 12.25, w: 1, d: 0.5, y0: RY, h: 9, color: 0x2c2c3c },
+  { x: -39.5, z: 12.25, w: 4, d: 0.5, y0: RY, h: 9, color: 0x2c2c3c },
+  { x: -42.5, z: 0, w: 11, d: 25, y0: 9, h: 9.4, color: 0x222233 },
+  { x: -45.5, z: 4, w: 1.2, d: 8, y0: RY, h: 7, color: 0x6b4a2b }
+);
+for (let k = 0; k < 12; k++) {
+  walls.push({ x: -44, z: 27 - 1.25 * (k + 0.5), w: 4, d: 1.25, h: 0.5 * (k + 1), color: k % 2 ? 0x777777 : 0x999999 });
+}
+const roomLight = new THREE.PointLight(0xfff0d0, 1.5, 20); roomLight.position.set(-42.5, 8, 0); scene.add(roomLight);
+
 const wallBoxes = [];
 for (const wall of walls) {
   const h = wall.h || 6;
   const mat = new THREE.MeshStandardMaterial({ color: wall.color || 0xd8d0c0 });
   if (wall.photo) addPhoto(mat, wall.photo, 1, 1);
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(wall.w, h, wall.d), mat);
-  mesh.position.set(wall.x, h / 2, wall.z);
+  const y0 = wall.y0 || 0;
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(wall.w, h - y0, wall.d), mat);
+  mesh.position.set(wall.x, (h + y0) / 2, wall.z);
   scene.add(mesh);
   wallBoxes.push({
     minX: wall.x - wall.w / 2,
@@ -235,18 +245,21 @@ for (const wall of walls) {
     minZ: wall.z - wall.d / 2,
     maxZ: wall.z + wall.d / 2,
     h: h,
+    y0: y0,
   });
 }
 
-// Stops players and bots from walking through walls
-function pushOutOfWalls(pos) {
+const STEP_HEIGHT = 0.65, GRAVITY = 26, JUMP_SPEED = 9.5;
+let velY = 0, onGround = true;
+
+// Stops players and bots from walking through walls (feet = height of your feet)
+function pushOutOfWalls(pos, feet = 0, step = 0) {
   const r = 0.6;
   for (const b of wallBoxes) {
+    if (feet >= b.h - step || feet + 2 <= b.y0) continue; // stepped over it, or it is above your head
     if (pos.x > b.minX - r && pos.x < b.maxX + r && pos.z > b.minZ - r && pos.z < b.maxZ + r) {
-      const left = pos.x - (b.minX - r);
-      const right = b.maxX + r - pos.x;
-      const up = pos.z - (b.minZ - r);
-      const down = b.maxZ + r - pos.z;
+      const left = pos.x - (b.minX - r), right = b.maxX + r - pos.x;
+      const up = pos.z - (b.minZ - r), down = b.maxZ + r - pos.z;
       const m = Math.min(left, right, up, down);
       if (m === left) pos.x = b.minX - r;
       else if (m === right) pos.x = b.maxX + r;
@@ -259,9 +272,55 @@ function pushOutOfWalls(pos) {
 // True if a point (phone, grenade, enemy ball) is inside a wall
 function insideWall(p) {
   for (const b of wallBoxes) {
-    if (p.x > b.minX && p.x < b.maxX && p.z > b.minZ && p.z < b.maxZ && p.y < b.h) return true;
+    if (p.x > b.minX && p.x < b.maxX && p.z > b.minZ && p.z < b.maxZ && p.y < b.h && p.y >= b.y0) return true;
   }
   return false;
+}
+
+function groundAt(x, z, feet) {
+  let g = 0;
+  for (const b of wallBoxes) {
+    if (x > b.minX - 0.3 && x < b.maxX + 0.3 && z > b.minZ - 0.3 && z < b.maxZ + 0.3 && b.h <= feet + STEP_HEIGHT && b.h > g) g = b.h;
+  }
+  return g;
+}
+
+function physicsStep(dt, canJump) {
+  const p = player.position;
+  const prev = p.y - 1;
+  if (canJump && keys.Space && onGround) { velY = JUMP_SPEED; onGround = false; }
+  velY -= GRAVITY * dt;
+  let feet = prev + velY * dt;
+  if (velY > 0) {
+    for (const b of wallBoxes) {
+      if (b.y0 > 0 && p.x > b.minX - 0.4 && p.x < b.maxX + 0.4 && p.z > b.minZ - 0.4 && p.z < b.maxZ + 0.4 &&
+          prev + 2 <= b.y0 + 0.01 && feet + 2 > b.y0) { feet = b.y0 - 2; velY = 0; }
+    }
+  }
+  const g = groundAt(p.x, p.z, prev);
+  if (feet <= g) { feet = g; velY = 0; onGround = true; } else onGround = false;
+  p.y = feet + 1;
+}
+
+// Two-way teleporter: field (east side) <-> announcer room
+const pads = [
+  { x: 18, z: -30, y: 0, to: [-41, 6, 0], c: 0x00e5ff },
+  { x: -43.5, z: -8, y: 6, to: [18, 0, -26], c: 0xff66ff },
+];
+for (const pd of pads) {
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, 0.12, 24), new THREE.MeshStandardMaterial({ color: pd.c, emissive: pd.c, emissiveIntensity: 0.9 }));
+  m.position.set(pd.x, pd.y + 0.06, pd.z); scene.add(m);
+  const pl = new THREE.PointLight(pd.c, 1.2, 8); pl.position.set(pd.x, pd.y + 1.2, pd.z); scene.add(pl);
+}
+let padCooldown = 0;
+function checkPads(now) {
+  if (!playing || dead || now < padCooldown) return;
+  const p = player.position, feet = p.y - 1;
+  for (const pd of pads) {
+    if (Math.hypot(p.x - pd.x, p.z - pd.z) < 1.2 && Math.abs(feet - pd.y) < 0.6) {
+      p.set(pd.to[0], pd.to[1] + 1, pd.to[2]); velY = 0; padCooldown = now + 1500; break;
+    }
+  }
 }
 
 // True if nothing is blocking the line between two spots (used by bots to "see")
@@ -2304,7 +2363,9 @@ function animate() {
     // Hold the mouse to keep shooting
     if (mouseHeld) tryShoot();
   }
-  pushOutOfWalls(player.position);
+  pushOutOfWalls(player.position, player.position.y - 1, STEP_HEIGHT);
+  physicsStep(dt, playing && !dead && !paused && ultPhase === 0);
+  checkPads(now);
   player.rotation.y = yaw;
 
   // Online: tell the server where you are (20 times a second)
@@ -2314,6 +2375,7 @@ function animate() {
       t: "st",
       x: +player.position.x.toFixed(2),
       z: +player.position.z.toFixed(2),
+      y: +player.position.y.toFixed(2),
       yaw: +yaw.toFixed(3),
       pitch: +pitch.toFixed(3),
       sh: shieldUp ? 1 : 0,
