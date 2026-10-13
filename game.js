@@ -2147,10 +2147,38 @@ function fireBurst(px, pz, yw, pt, ch, fx, py = 1) {
   }
 }
 
+// Where the crosshair is really pointing (in third person the camera is behind and above you,
+// so shots must be aimed at the spot the camera ray hits, not just where your body faces)
+function aimDirection(eye) {
+  const o = camera.getWorldPosition(new THREE.Vector3());
+  const f = camera.getWorldDirection(new THREE.Vector3());
+  let dist = 120;
+  const p = new THREE.Vector3();
+  for (let d = 0.5; d < 120; d += 0.5) {
+    p.copy(o).addScaledVector(f, d);
+    if (p.y < 0 || insideWall(p)) { dist = d; break; }
+  }
+  const test = (pos) => {
+    const v = new THREE.Vector3().subVectors(pos, o);
+    const t = v.dot(f);
+    if (t > 0 && t < dist && o.clone().addScaledVector(f, t).distanceTo(pos) < 1.2) dist = t;
+  };
+  for (const bot of bots) if (bot.alive) test(bot.mesh.position);
+  for (const r of remotes.values()) if (r.alive) test(r.mesh.position);
+  const aim = o.clone().addScaledVector(f, dist);
+  const dir = aim.sub(eye);
+  if (dir.length() < 1.5) return f;
+  return dir.normalize();
+}
+
 function shoot() {
   viewKick = 1; // hand recoil in first person
-  fireBurst(player.position.x, player.position.z, yaw, pitch, current, false, player.position.y);
-  netFx("p", [player.position.x, player.position.z, yaw, pitch, player.position.y]);
+  const eye = new THREE.Vector3(player.position.x, player.position.y + 0.7, player.position.z);
+  const ad = aimDirection(eye);
+  const ay = Math.atan2(-ad.x, -ad.z);
+  const ap = Math.asin(Math.max(-1, Math.min(1, ad.y)));
+  fireBurst(player.position.x, player.position.z, ay, ap, current, false, player.position.y);
+  netFx("p", [player.position.x, player.position.z, ay, ap, player.position.y]);
 }
 
 function tryShoot() {
@@ -2528,8 +2556,8 @@ function fireApple() {
   const now = performance.now();
   appleAmmo--;
   viewKick = 1;
-  const f = new THREE.Vector3(-Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
   const eye = new THREE.Vector3(player.position.x, player.position.y + 0.7, player.position.z);
+  const f = aimDirection(eye);
   let wall = 120;
   const p = new THREE.Vector3();
   for (let d = 0.5; d < 120; d += 0.5) {
