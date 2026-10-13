@@ -2,7 +2,7 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const SERVER_VERSION = 4; // the game warns players if this doesn't match game.js
+const SERVER_VERSION = 5; // the game warns players if this doesn't match game.js
 const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 12;
 const RESPAWN_MS = 3000;
@@ -17,6 +17,9 @@ const RULES = {
   apple: { dmg: 40, range: 125 }, // Ms. Applebee hitscan apple
   mine: { dmg: 75, range: 90 }, // Ms. Applebee landmine
   hive: { dmg: 50, range: 10, slow: 2000 }, // Ms. Applebee beehive (slows for 2s)
+  bee: { dmg: 50, range: 125 }, // Ms. Applebee bee gun blast
+  beezone: { dmg: 15, range: 125, slow: 1500 }, // the sticky zone's one tick of damage + slow
+  beeslow: { dmg: 0, range: 125, slow: 600 }, // standing in the zone keeps you slowed
 };
 const SHIELD_BLOCK = 0.85;
 const BONUS_SHIELD = 50; // blue bonus shield a player gets from siphon (keep the same as game.js)
@@ -163,7 +166,22 @@ function hit(a, m) {
     }
     a.hammerHit.add(t.id);
   }
+  if (m.k === "bee") {
+    // one bee gun shot per ~4s (a blast can hit several players at the same moment)
+    const nowB = Date.now();
+    if (nowB - (a.beeAt || 0) > 4000) {
+      a.beeAt = nowB;
+      a.beeHit = new Set();
+    } else if (nowB - a.beeAt > 500 || (a.beeHit && a.beeHit.has(t.id))) {
+      return;
+    }
+    a.beeHit.add(t.id);
+  }
   if (t.inv) return; // can't be hurt during the ult
+  if (rule.dmg === 0) {
+    if (rule.slow) send(t, { t: "slow", ms: rule.slow });
+    return;
+  }
   if (m.k === "apple") {
     const nowA = Date.now();
     if (nowA - (a.appleAt || 0) < 120) return; // apples can't be spammed faster than a real fire rate
@@ -192,7 +210,7 @@ function hit(a, m) {
     t.lastHitBy = 0;
     t.deaths++;
     a.kills++;
-    const how = { hammer: "banned", beam: "beam", apple: "apple", mine: "mine", hive: "hive" }[m.k] || "";
+    const how = { hammer: "banned", beam: "beam", apple: "apple", mine: "mine", hive: "hive", bee: "bee", beezone: "bee" }[m.k] || "";
     broadcast(room, { t: "kill", killer: a.id, victim: t.id, how });
     // siphon: the killer gets full health plus a 50 blue bonus shield
     siphonPlayer(room, a);
