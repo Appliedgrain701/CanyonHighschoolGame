@@ -379,6 +379,37 @@ const characters = {
     ultDamage: 150, // damage per beam
     ultBeams: 3,
   },
+  applebee: {
+    name: "Ms. Applebee",
+    kind: "applebee",
+    color: 0xc0392b,
+    picture: "applebee.png", // optional cutout photo of her
+    health: 200,
+    speed: 0.17,
+    // Weapon: 6 hitscan apples (like Jett's knives)
+    fireDelay: 300, // ms between apples
+    apples: 6,
+    appleDamage: 40,
+    reloadMs: 2000, // reload if you used all 6 without a kill (a kill refills instantly)
+    // E: landmine
+    grenadeCooldown: 6000,
+    mineDamage: 75,
+    maxMines: 3,
+    // V: beehive (no cooldown, slows)
+    meleeCooldown: 0,
+    meleeRange: 3.5,
+    meleeDamage: 50,
+    slowMs: 2000,
+    // no ult yet
+    ultCost: 100,
+    ultStartCharge: 0,
+    ultPassivePerSec: 0.7,
+    ultPerDamage: 0.07,
+    ultPerKill: 8,
+    desc:
+      "Health: 200<br>Weapon: 6 Apples (40 dmg each, hitscan)<br>No kill with all 6 = 2s reload<br>" +
+      "A kill = instant refill<br>E: Apple Landmine (75 dmg, 6s)<br>V: Beehive (50 dmg + slow)<br>X: coming soon",
+  },
 };
 let current = characters.mahoney;
 
@@ -392,7 +423,7 @@ const BEAM_HIT_RADIUS = 1.4;
 const BEAM_LIFE = 45; // frames a beam stays visible
 const PHONE_VIEW = { x: 0.38, y: -0.36, z: -0.8 }; // where the phone sits in first person
 const NET_RATE = 50; // ms between position updates sent online (20 per second)
-const SERVER_VERSION = 3; // must match server.js (used to warn you if the server is old)
+const SERVER_VERSION = 4; // must match server.js (used to warn you if the server is old)
 const LAST_HIT_WINDOW = 10000; // ms: switching teachers gives the kill to whoever hit you in this time
 
 // ----- BOT SETTINGS (change these to make bots easier or harder) -----
@@ -671,7 +702,7 @@ feed.style.cssText =
   "pointer-events:none;z-index:5;font:bold 15px sans-serif;";
 document.body.appendChild(feed);
 function addFeed(killer, victim, how) {
-  const verb = how === "banned" ? "BANNED" : how === "beam" ? "BALDED" : "eliminated";
+  const verb = { banned: "BANNED", beam: "BALDED", apple: "APPLED", mine: "BLEW UP", hive: "BEEHIVED" }[how] || "eliminated";
   const row = document.createElement("div");
   row.style.cssText =
     "background:rgba(0,0,0,0.6);color:#fff;padding:4px 10px;border-radius:4px;border-left:4px solid #ffd700;";
@@ -819,6 +850,9 @@ let bannerTimer;
 function showKillBanner(victim, how) {
   if (how === "banned") bannerSub.textContent = victim + " got BANNED";
   else if (how === "beam") bannerSub.textContent = victim + " got BALDED";
+  else if (how === "apple") bannerSub.textContent = victim + " got APPLED";
+  else if (how === "mine") bannerSub.textContent = victim + " got BLOWN UP";
+  else if (how === "hive") bannerSub.textContent = victim + " got BEEHIVED";
   else bannerSub.textContent = victim + " eliminated";
   banner.style.opacity = "1";
   banner.style.transform = "translateX(-50%) scale(1)";
@@ -1065,6 +1099,7 @@ for (const key in characters) {
   const card = makeCard(
     '<div style="font-size:24px;font-weight:bold;margin-bottom:10px;">' + c.name + "</div>" +
       '<div style="font-size:14px;line-height:22px;text-align:left;">' +
+      (c.desc ? c.desc + '</div><div style="display:none;">' : "") +
       "Health: " + c.health + "<br>" +
       "Weapon: Phones (" + c.burst + " x " + c.damage + " dmg)<br>" +
       "Q: Dash<br>" +
@@ -1101,7 +1136,6 @@ for (const key in characters) {
   card.addEventListener("click", () => selectCharacter(key));
 }
 makeCard('<div style="font-size:24px;margin:80px 0;">Coming soon</div>', true);
-makeCard('<div style="font-size:24px;margin:80px 0;">Coming soon</div>', true);
 
 // Bot mode: switching teachers counts as a respawn, so the last bot that hit you gets the kill
 function creditSwitchKill() {
@@ -1134,6 +1168,7 @@ function selectCharacter(key) {
   playerHealth = maxHealth;
   speed = current.speed;
   lastShot = lastDash = lastGrenade = lastMelee = -99999;
+  resetApples();
   bonusShield = 0;
   dashFrames = 0;
   meleeStart = 0;
@@ -1209,6 +1244,7 @@ function damagePlayer(amount, attacker) {
   if (playerHealth <= 0) {
     playerHealth = 0;
     dead = true;
+    clearMines();
     lastAttacker = null;
     deaths++;
     updateStats();
@@ -1270,7 +1306,7 @@ addEventListener("keydown", (e) => {
   }
 
   if (!playing || dead || paused || ultPhase !== 0 || e.repeat) return;
-  if (e.code === "KeyQ") dash();
+  if (e.code === "KeyQ" && current.kind !== "applebee") dash();
   if (e.code === "KeyE") throwGrenade();
   if (e.code === "KeyV") melee();
   if (e.code === "KeyX") startUlt();
@@ -1521,6 +1557,7 @@ function damageBot(bot, amount, how, attacker) {
     if (attacker === "player") {
       kills++;
       addUltCharge(current.ultPerKill);
+      refillApples();
       siphon();
       showKillBanner(bot.name, how); // elimination banner
       addFeed("You", bot.name, how);
@@ -1623,8 +1660,9 @@ function updateBots(dt, t) {
     mx += -dz * bot.strafe * 0.8;
     mz += dx * bot.strafe * 0.8;
     const len = Math.hypot(mx, mz) || 1;
-    pos.x += (mx / len) * BOT_SPEED * dt;
-    pos.z += (mz / len) * BOT_SPEED * dt;
+    const bslow = bot.slowUntil > t ? 0.5 : 1;
+    pos.x += (mx / len) * BOT_SPEED * dt * bslow;
+    pos.z += (mz / len) * BOT_SPEED * dt * bslow;
 
     // don't stack on top of other bots
     for (const o of bots) {
@@ -1696,9 +1734,12 @@ function addRemote(p) {
   const hammer = makeHammer();
   hammer.position.set(0.8, 0.1, -0.2);
   mesh.add(hammer);
+  const hive = makeHive();
+  hive.position.set(0.8, 0.1, -0.2);
+  mesh.add(hive);
   const shieldG = makeShield(1.5);
   scene.add(shieldG);
-  mesh.position.set(p.x, 1, p.z);
+  mesh.position.set(p.x, p.y || 1, p.z);
   mesh.visible = p.alive !== false;
   scene.add(mesh);
 
@@ -1708,6 +1749,11 @@ function addRemote(p) {
     color,
     mesh,
     hammer,
+    hive,
+    head,
+    char: "mahoney",
+    spr: null,
+    ty: p.y || 1,
     shieldG,
     tagCanvas: tag.c,
     tagTex: tag.tex,
@@ -1725,18 +1771,30 @@ function addRemote(p) {
   remotes.set(p.id, r);
   drawTag(r);
 
-  // use the cutout picture if there is one
-  texLoader.load(characters.mahoney.picture, (t) => {
-    if (remotes.get(p.id) !== r) return;
+  setRemoteChar(r, p.char || "mahoney");
+  updateRoomHud();
+}
+
+function setRemoteChar(r, key) {
+  if (!characters[key]) key = "mahoney";
+  r.char = key;
+  if (r.spr) {
+    r.mesh.remove(r.spr);
+    r.spr = null;
+  }
+  r.mesh.material.visible = true;
+  r.head.visible = true;
+  texLoader.load(characters[key].picture, (t) => {
+    if (remotes.get(r.id) !== r || r.char !== key) return;
     t.colorSpace = THREE.SRGBColorSpace;
     const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, alphaTest: 0.05 }));
     spr.scale.set(BODY_HEIGHT * (t.image.width / t.image.height), BODY_HEIGHT, 1);
     spr.position.y = BODY_HEIGHT / 2 - 1;
-    mesh.add(spr);
-    mesh.material.visible = false;
-    head.visible = false;
+    r.mesh.add(spr);
+    r.spr = spr;
+    r.mesh.material.visible = false;
+    r.head.visible = false;
   });
-  updateRoomHud();
 }
 
 function removeRemote(id) {
@@ -1744,6 +1802,7 @@ function removeRemote(id) {
   if (!r) return;
   scene.remove(r.mesh);
   scene.remove(r.shieldG);
+  clearRemoteMines(id);
   remotes.delete(id);
   updateRoomHud();
 }
@@ -1760,6 +1819,7 @@ function updateRemotes(dt, now) {
     const p = r.mesh.position;
     p.x += (r.tx - p.x) * k;
     p.z += (r.tz - p.z) * k;
+    p.y += (r.ty - p.y) * k;
     let d = r.yaw - r.curYaw;
     while (d > Math.PI) d -= Math.PI * 2;
     while (d < -Math.PI) d += Math.PI * 2;
@@ -1777,12 +1837,14 @@ function updateRemotes(dt, now) {
 
     if (r.swingStart > 0) {
       const t = (now - r.swingStart) / MELEE_TIME;
+      const tool = r.char === "applebee" ? r.hive : r.hammer;
       if (t >= 1) {
         r.swingStart = 0;
         r.hammer.visible = false;
+        r.hive.visible = false;
       } else {
-        r.hammer.visible = true;
-        r.hammer.rotation.x = swingAngle(t, 0.2, 1.0, -1.9);
+        tool.visible = true;
+        tool.rotation.x = swingAngle(t, 0.2, 1.0, -1.9);
       }
     }
   }
@@ -1915,6 +1977,7 @@ function handleNet(m) {
         r.tz = s.z;
         r.yaw = s.yaw;
         r.shield = !!s.sh;
+        if (s.y !== undefined) r.ty = s.y;
       }
       break;
     }
@@ -1946,12 +2009,14 @@ function handleNet(m) {
       if (m.killer === net.id) {
         kills++;
         addUltCharge(current.ultPerKill);
+        refillApples();
         showKillBanner(vName, m.how); // elimination banner
         addFeedText("SIPHON: full health + " + BONUS_SHIELD + " blue shield");
         addFeed("You", vName, m.how);
       } else if (m.victim === net.id) {
         deaths++;
         dead = true;
+        clearMines();
         dashFrames = 0;
         addFeed(kName, "You", m.how);
         deathMsg.textContent = "ELIMINATED BY " + kName.toUpperCase() + " - respawning...";
@@ -1964,6 +2029,7 @@ function handleNet(m) {
       if (rv) {
         rv.alive = false;
         rv.shield = false;
+        clearRemoteMines(m.victim);
       }
       updateStats();
       break;
@@ -1987,9 +2053,16 @@ function handleNet(m) {
           r.tx = m.x;
           r.tz = m.z;
           r.mesh.position.set(m.x, 1, m.z);
+          r.ty = 1;
+          if (m.char && r.char !== m.char) setRemoteChar(r, m.char);
           drawTag(r);
         }
       }
+      break;
+    }
+    case "slow": {
+      slowUntil = performance.now() + (m.ms || 2000);
+      addFeedText("SLOWED by a beehive!");
       break;
     }
     case "error": {
@@ -2009,6 +2082,25 @@ function handleFx(m) {
   else if (m.k === "b") spawnBeam(new THREE.Vector3(a[0], a[1], a[2]), new THREE.Vector3(a[3], a[4], a[5]));
   else if (m.k === "u") addFeedText(r.name + " is BALDING!");
   else if (m.k === "h") r.swingStart = performance.now();
+  else if (m.k === "a") spawnAppleFx(new THREE.Vector3(a[0], a[1], a[2]), new THREE.Vector3(a[3], a[4], a[5]));
+  else if (m.k === "m") {
+    const arr = remoteMines.get(m.id) || [];
+    arr.push(makeMineMesh(a[0], a[1], a[2]));
+    if (arr.length > 3) scene.remove(arr.shift());
+    remoteMines.set(m.id, arr);
+  } else if (m.k === "x") {
+    const arr = remoteMines.get(m.id) || [];
+    let bi = -1, bd = 2;
+    arr.forEach((g, i) => {
+      const d = Math.hypot(g.position.x - a[0], g.position.z - a[2]);
+      if (d < bd) { bd = d; bi = i; }
+    });
+    if (bi >= 0) {
+      scene.remove(arr[bi]);
+      arr.splice(bi, 1);
+      boomAt(new THREE.Vector3(a[0], a[1] + 0.5, a[2]), 2.5);
+    }
+  } else if (m.k === "c") clearRemoteMines(m.id);
 }
 
 // ================= MR. MAHONEY: PHONE BURST =================
@@ -2055,6 +2147,12 @@ function tryShoot() {
   if (!document.pointerLockElement) return;
   const now = performance.now();
   if (now - lastShot < current.fireDelay) return;
+  if (current.kind === "applebee") {
+    if (appleReload > 0 || appleAmmo <= 0) return;
+    lastShot = now;
+    fireApple();
+    return;
+  }
   lastShot = now;
   shoot();
 }
@@ -2110,6 +2208,10 @@ function spawnGrenade(x, y, z, vx, vy, vz, fx) {
 function throwGrenade() {
   if (performance.now() - lastGrenade < current.grenadeCooldown) return;
   lastGrenade = performance.now();
+  if (current.kind === "applebee") {
+    placeMine();
+    return;
+  }
   throwAnim = 1; // arm throw in first person
   const x = player.position.x - Math.sin(yaw) * 0.8;
   const z = player.position.z - Math.cos(yaw) * 0.8;
@@ -2153,7 +2255,7 @@ function explode(pos, fx) {
 // ================= MR. MAHONEY: BAN HAMMER (V) =================
 function melee() {
   const now = performance.now();
-  if (now - lastMelee < current.meleeCooldown) return;
+  if (now - lastMelee < current.meleeCooldown || meleeStart > 0) return;
   lastMelee = now;
   meleeStart = now;
   meleeHit = false;
@@ -2162,6 +2264,7 @@ function melee() {
 
 // Called in the middle of the swing: one shots anything in front of him
 function meleeStrike() {
+  const hv = current.kind === "applebee";
   for (const bot of bots) {
     if (!bot.alive) continue;
     const dx = bot.mesh.position.x - player.position.x;
@@ -2170,7 +2273,8 @@ function meleeStrike() {
     if (dist > current.meleeRange) continue;
     const dot = (dx * -Math.sin(yaw) + dz * -Math.cos(yaw)) / Math.max(dist, 0.001);
     if (dist > 1.0 && dot < 0.4) continue; // must be in front of you
-    damageBot(bot, ONE_SHOT, "banned", "player");
+    damageBot(bot, hv ? current.meleeDamage : ONE_SHOT, hv ? "hive" : "banned", "player");
+    if (hv) bot.slowUntil = performance.now() / 1000 + current.slowMs / 1000;
   }
   for (const r of remotes.values()) {
     if (!r.alive) continue;
@@ -2180,7 +2284,7 @@ function meleeStrike() {
     if (dist > current.meleeRange) continue;
     const dot = (dx * -Math.sin(yaw) + dz * -Math.cos(yaw)) / Math.max(dist, 0.001);
     if (dist > 1.0 && dot < 0.4) continue;
-    netSend({ t: "hit", target: r.id, k: "hammer" });
+    netSend({ t: "hit", target: r.id, k: hv ? "hive" : "hammer" });
   }
 }
 
@@ -2189,6 +2293,10 @@ const beams = [];
 const beamGeo = new THREE.CylinderGeometry(1, 1, 1, 12, 1, true);
 
 function startUlt() {
+  if (current.kind === "applebee") {
+    addFeedText("Ms. Applebee has no ult yet");
+    return;
+  }
   if (ultPhase !== 0 || ultCharge < current.ultCost) return;
   ultPhase = 1; // bald head close-up
   ultStart = performance.now();
@@ -2313,6 +2421,227 @@ function fireBeam() {
   shake = 1;
 }
 
+// ================= MS. APPLEBEE =================
+let appleAspect = 1;
+function makeAppleCanvas() {
+  const c = document.createElement("canvas");
+  c.width = c.height = 128;
+  const g = c.getContext("2d");
+  g.fillStyle = "#d62828";
+  g.beginPath(); g.arc(64, 72, 46, 0, Math.PI * 2); g.fill();
+  g.fillStyle = "#ff7b7b";
+  g.beginPath(); g.arc(48, 56, 12, 0, Math.PI * 2); g.fill();
+  g.fillStyle = "#5a3a1a"; g.fillRect(61, 16, 6, 18);
+  g.fillStyle = "#3a9d23";
+  g.beginPath(); g.ellipse(82, 24, 18, 8, -0.5, 0, Math.PI * 2); g.fill();
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const appleSprMat = new THREE.SpriteMaterial({ map: makeAppleCanvas(), transparent: true });
+const appleMeshMat = new THREE.MeshBasicMaterial({ map: appleSprMat.map, transparent: true, alphaTest: 0.05, side: THREE.DoubleSide });
+texLoader.load("apple.png", (t) => {
+  t.colorSpace = THREE.SRGBColorSpace;
+  appleAspect = t.image.width / t.image.height;
+  appleSprMat.map = t; appleSprMat.needsUpdate = true;
+  appleMeshMat.map = t; appleMeshMat.needsUpdate = true;
+});
+
+let appleAmmo = 6;
+let appleReload = 0; // 0 = not reloading, otherwise the time the reload ends
+let slowUntil = 0;
+
+// 6 apples circling her (third person)
+const orbitApples = [];
+for (let i = 0; i < 6; i++) {
+  const sp = new THREE.Sprite(appleSprMat);
+  sp.visible = false;
+  player.add(sp);
+  orbitApples.push(sp);
+}
+
+// Beehive (melee)
+function makeHive() {
+  const g = new THREE.Group();
+  const rope = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.0, 8), new THREE.MeshStandardMaterial({ color: 0x6b3f1d }));
+  rope.position.y = 0.5;
+  g.add(rope);
+  const radii = [0.35, 0.5, 0.45, 0.3];
+  for (let i = 0; i < 4; i++) {
+    const seg = new THREE.Mesh(
+      new THREE.SphereGeometry(radii[i], 14, 10),
+      new THREE.MeshStandardMaterial({ color: i % 2 ? 0x5a3a10 : 0xe0a526 })
+    );
+    seg.scale.y = 0.65;
+    seg.position.y = 1.0 + i * 0.3;
+    g.add(seg);
+  }
+  const hole = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 8), new THREE.MeshStandardMaterial({ color: 0x111111 }));
+  hole.position.set(0, 1.35, -0.42);
+  g.add(hole);
+  g.visible = false;
+  return g;
+}
+const hiveTP = makeHive();
+hiveTP.position.set(0.8, 0.1, -0.2);
+player.add(hiveTP);
+const hiveFP = makeHive();
+hiveFP.scale.setScalar(0.5);
+hiveFP.position.set(0.35, -0.5, -0.7);
+viewRoot.add(hiveFP);
+
+function resetApples() {
+  appleAmmo = current.apples || 6;
+  appleReload = 0;
+  slowUntil = 0;
+  clearMines();
+  viewPhoneImg.material = current.kind === "applebee" ? appleMeshMat : phoneMat;
+}
+function refillApples() {
+  if (current.kind !== "applebee") return;
+  appleAmmo = current.apples;
+  appleReload = 0;
+}
+
+// Apple flying to where the shot landed (the hit itself is instant)
+const appleFx = [];
+function spawnAppleFx(from, to) {
+  const sp = new THREE.Sprite(appleSprMat);
+  sp.scale.set(0.6 * appleAspect, 0.6, 1);
+  sp.position.copy(from);
+  scene.add(sp);
+  appleFx.push({ sp, from, to, t0: performance.now() });
+}
+
+function fireApple() {
+  const now = performance.now();
+  appleAmmo--;
+  viewKick = 1;
+  const f = new THREE.Vector3(-Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
+  const eye = new THREE.Vector3(player.position.x, player.position.y + 0.7, player.position.z);
+  let wall = 120;
+  const p = new THREE.Vector3();
+  for (let d = 0.5; d < 120; d += 0.5) {
+    p.copy(eye).addScaledVector(f, d);
+    if (p.y < 0 || insideWall(p)) { wall = d; break; }
+  }
+  const cand = [];
+  for (const bot of bots) if (bot.alive) cand.push({ bot, pos: bot.mesh.position });
+  for (const r of remotes.values()) if (r.alive) cand.push({ r, pos: r.mesh.position });
+  let best = null;
+  let bestT = wall;
+  for (const c of cand) {
+    const v = new THREE.Vector3().subVectors(c.pos, eye);
+    const t = v.dot(f);
+    if (t <= 0 || t >= bestT) continue;
+    if (eye.clone().addScaledVector(f, t).distanceTo(c.pos) < 1.1) { best = c; bestT = t; }
+  }
+  const end = eye.clone().addScaledVector(f, bestT);
+  const origin = eye.clone().addScaledVector(f, 0.8);
+  spawnAppleFx(origin, end);
+  netFx("a", [origin.x, origin.y, origin.z, end.x, end.y, end.z]);
+  if (best && best.bot) damageBot(best.bot, current.appleDamage, "apple", "player");
+  else if (best && best.r) netSend({ t: "hit", target: best.r.id, k: "apple" });
+  if (appleAmmo <= 0 && appleReload === 0) appleReload = now + current.reloadMs;
+}
+
+// Landmines
+const mines = [];
+const remoteMines = new Map();
+function makeMineMesh(x, y, z) {
+  const g = new THREE.Group();
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.7, 1.1, 24),
+    new THREE.MeshBasicMaterial({ color: 0xff3030, transparent: true, opacity: 0.6, side: THREE.DoubleSide })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.05;
+  g.add(ring);
+  const sp = new THREE.Sprite(appleSprMat);
+  sp.scale.set(0.7 * appleAspect, 0.7, 1);
+  sp.position.y = 0.45;
+  g.add(sp);
+  g.position.set(x, y, z);
+  scene.add(g);
+  return g;
+}
+function boomAt(pos, radius) {
+  const boom = new THREE.Mesh(
+    new THREE.SphereGeometry(radius, 16, 16),
+    new THREE.MeshBasicMaterial({ color: 0xff3b3b, transparent: true, opacity: 0.5 })
+  );
+  boom.position.copy(pos);
+  scene.add(boom);
+  setTimeout(() => scene.remove(boom), 250);
+}
+function placeMine() {
+  let x = player.position.x - Math.sin(yaw) * 1.2;
+  let z = player.position.z - Math.cos(yaw) * 1.2;
+  const feet = player.position.y - 1;
+  if (insideWall({ x, y: feet + 0.5, z })) { x = player.position.x; z = player.position.z; }
+  const y = groundAt(x, z, feet);
+  while (mines.length >= current.maxMines) {
+    const old = mines.shift();
+    scene.remove(old.g);
+    netFx("x", [old.x, old.y, old.z]);
+  }
+  mines.push({ g: makeMineMesh(x, y, z), x, y, z, armAt: performance.now() + 700 });
+  netFx("m", [x, y, z]);
+}
+function clearMines() {
+  if (mines.length === 0) return;
+  for (const m of mines) scene.remove(m.g);
+  mines.length = 0;
+  netFx("c", []);
+}
+function clearRemoteMines(id) {
+  const arr = remoteMines.get(id);
+  if (arr) for (const g of arr) scene.remove(g);
+  remoteMines.delete(id);
+}
+function checkMines(now) {
+  if (!playing || dead || current.kind !== "applebee") return;
+  for (let i = mines.length - 1; i >= 0; i--) {
+    const m = mines[i];
+    if (now < m.armAt) continue;
+    const near = (p, r) => Math.hypot(p.x - m.x, p.z - m.z) < r && Math.abs(p.y - 1 - m.y) < 1.8;
+    let trig = false;
+    for (const bot of bots) if (bot.alive && near(bot.mesh.position, 1.4)) trig = true;
+    for (const r of remotes.values()) if (r.alive && near(r.mesh.position, 1.4)) trig = true;
+    if (!trig) continue;
+    mines.splice(i, 1);
+    scene.remove(m.g);
+    boomAt(new THREE.Vector3(m.x, m.y + 0.5, m.z), 2.5);
+    netFx("x", [m.x, m.y, m.z]);
+    for (const bot of bots) if (bot.alive && near(bot.mesh.position, 2.5)) damageBot(bot, current.mineDamage, "mine", "player");
+    for (const r of remotes.values()) if (r.alive && near(r.mesh.position, 2.5)) netSend({ t: "hit", target: r.id, k: "mine" });
+  }
+}
+
+// Per-frame: reload timer, circling apples, flying apple pictures
+function updateApples(now) {
+  if (appleReload > 0 && now >= appleReload) {
+    appleAmmo = current.apples || 6;
+    appleReload = 0;
+  }
+  const on = current.kind === "applebee" && !dead && !isFirstPerson();
+  for (let i = 0; i < 6; i++) {
+    const sp = orbitApples[i];
+    sp.visible = on && i < appleAmmo;
+    const a = now / 700 + (i * Math.PI * 2) / 6;
+    sp.position.set(Math.cos(a) * 1.3, 0.1 + Math.sin(now / 400 + i) * 0.1, Math.sin(a) * 1.3);
+    sp.scale.set(0.55 * appleAspect, 0.55, 1);
+  }
+  for (let i = appleFx.length - 1; i >= 0; i--) {
+    const f = appleFx[i];
+    const t = (now - f.t0) / 130;
+    if (t >= 1) {
+      scene.remove(f.sp);
+      appleFx.splice(i, 1);
+    } else f.sp.position.lerpVectors(f.from, f.to, t);
+  }
+}
+
 // ================= GAME LOOP =================
 let lastFrame = performance.now();
 
@@ -2336,11 +2665,11 @@ function animate() {
 
   // Shield is up while you hold right click
   shieldUp =
-    playing && !dead && !paused && ultPhase === 0 && rightHeld && meleeStart === 0 && !!document.pointerLockElement;
+    playing && !dead && !paused && current.shieldBlock > 0 && ultPhase === 0 && rightHeld && meleeStart === 0 && !!document.pointerLockElement;
 
   // Movement (not while the Esc menu is open)
   if (playing && !dead && !paused && ultPhase === 0) {
-    const moveSpeed = shieldUp ? speed * current.shieldSpeed : speed;
+    const moveSpeed = (shieldUp ? speed * current.shieldSpeed : speed) * (now < slowUntil ? 0.5 : 1);
     const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
     const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
     if (keys.KeyW) player.position.addScaledVector(forward, moveSpeed);
@@ -2389,6 +2718,8 @@ function animate() {
 
   // Other online players
   updateRemotes(dt, now);
+  updateApples(now);
+  checkMines(now);
 
   // Ban hammer swing
   if (meleeStart > 0) {
@@ -2400,13 +2731,17 @@ function animate() {
     if (t >= 1) {
       meleeStart = 0;
     } else {
-      hammerTP.rotation.x = swingAngle(t, 0.2, 1.0, -1.9);
-      hammerFP.rotation.x = swingAngle(t, 0.1, 0.5, -1.4);
+      const hvA = current.kind === "applebee";
+      (hvA ? hiveTP : hammerTP).rotation.x = swingAngle(t, 0.2, 1.0, -1.9);
+      (hvA ? hiveFP : hammerFP).rotation.x = swingAngle(t, 0.1, 0.5, -1.4);
     }
   }
   const swinging = meleeStart > 0;
-  hammerTP.visible = swinging;
-  hammerFP.visible = swinging;
+  const hvB = current.kind === "applebee";
+  hammerTP.visible = swinging && !hvB;
+  hammerFP.visible = swinging && !hvB;
+  hiveTP.visible = swinging && hvB;
+  hiveFP.visible = swinging && hvB;
 
   // First person hands / shield
   const fp = isFirstPerson();
@@ -2433,7 +2768,7 @@ function animate() {
     PHONE_VIEW.z + viewKick * 0.1 - throwAnim * 0.1
   );
   viewPhone.rotation.x = throwAnim * 0.9 + viewKick * 0.15;
-  viewPhoneImg.scale.set(0.34 * phoneAspect, 0.34, 1);
+  viewPhoneImg.scale.set(0.34 * (current.kind === "applebee" ? appleAspect : phoneAspect), 0.34, 1);
 
   // Fade out the dash trail
   for (let i = trails.length - 1; i >= 0; i--) {
@@ -2577,6 +2912,17 @@ function animate() {
   }
 
   // Ability text
+  if (current.kind === "applebee") {
+    abilityHud.innerHTML =
+      (appleReload > 0
+        ? "RELOADING " + Math.max(0, (appleReload - now) / 1000).toFixed(1) + "s"
+        : "Apples: " + appleAmmo + "/" + current.apples) +
+      "<br>" +
+      cooldownText("Landmine", "E", lastGrenade, current.grenadeCooldown) +
+      " [" + mines.length + "/" + current.maxMines + " placed]" +
+      "<br>Beehive (V): READY" +
+      (now < slowUntil ? "<br>SLOWED!" : "");
+  } else
   abilityHud.innerHTML =
     cooldownText("Dash", "Q", lastDash, current.dashCooldown) +
     "<br>" +
@@ -2591,7 +2937,8 @@ function animate() {
   const ultReady = ultPct >= 100;
   ultFill.style.width = ultPct + "%";
   ultFill.className = ultReady || ultPhase !== 0 ? "rainbow" : "ultGold";
-  if (ultPhase !== 0) ultLabel.textContent = "BALDING!";
+  if (current.kind === "applebee") ultLabel.textContent = "ULT: coming soon";
+  else if (ultPhase !== 0) ultLabel.textContent = "BALDING!";
   else if (ultReady) ultLabel.textContent = "ULT READY - PRESS X";
   else ultLabel.textContent = "ULT " + ultPct + "%";
 
