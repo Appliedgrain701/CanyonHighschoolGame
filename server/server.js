@@ -2,11 +2,11 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const SERVER_VERSION = 3; // the game warns players if this doesn't match game.js
+const SERVER_VERSION = 4; // the game warns players if this doesn't match game.js
 const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 12;
 const RESPAWN_MS = 3000;
-const CHARS = { mahoney: { health: 275 } };
+const CHARS = { mahoney: { health: 275 }, applebee: { health: 200 } };
 
 // The SERVER decides damage, so players can't edit their own numbers
 const RULES = {
@@ -14,6 +14,9 @@ const RULES = {
   grenade: { dmg: 125, range: 70 },
   beam: { dmg: 150, range: 110 },
   hammer: { dmg: 99999, range: 10 }, // the only one-shot move
+  apple: { dmg: 40, range: 125 }, // Ms. Applebee hitscan apple
+  mine: { dmg: 75, range: 90 }, // Ms. Applebee landmine
+  hive: { dmg: 50, range: 10, slow: 2000 }, // Ms. Applebee beehive (slows for 2s)
 };
 const SHIELD_BLOCK = 0.85;
 const BONUS_SHIELD = 50; // blue bonus shield a player gets from siphon (keep the same as game.js)
@@ -66,7 +69,7 @@ function num(v, lo, hi, d) {
   return Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : d;
 }
 function pub(p) {
-  return { id: p.id, name: p.name, x: p.x, z: p.z, yaw: p.yaw, hp: p.hp, max: p.max, alive: p.alive };
+  return { id: p.id, name: p.name, char: p.char, y: p.y, x: p.x, z: p.z, yaw: p.yaw, hp: p.hp, max: p.max, alive: p.alive };
 }
 
 function pickSpawn(room) {
@@ -131,8 +134,9 @@ function respawn(p) {
   p.alive = true;
   p.sh = 0;
   p.inv = 0;
+  p.y = 1;
   p.lastHitBy = 0;
-  broadcast(p.room, { t: "respawn", id: p.id, x: p.x, z: p.z, hp: p.hp, max: p.max, bonus: 0 });
+  broadcast(p.room, { t: "respawn", id: p.id, char: p.char, x: p.x, z: p.z, hp: p.hp, max: p.max, bonus: 0 });
 }
 
 // Gives a player full health + the blue bonus shield
@@ -160,6 +164,11 @@ function hit(a, m) {
     a.hammerHit.add(t.id);
   }
   if (t.inv) return; // can't be hurt during the ult
+  if (m.k === "apple") {
+    const nowA = Date.now();
+    if (nowA - (a.appleAt || 0) < 120) return; // apples can't be spammed faster than a real fire rate
+    a.appleAt = nowA;
+  }
 
   let dmg = rule.dmg;
   if (t.sh) dmg *= 1 - SHIELD_BLOCK;
@@ -168,6 +177,7 @@ function hit(a, m) {
   const soak = Math.min(t.bonus, dmg);
   t.bonus -= soak;
   t.hp -= dmg - soak;
+  if (rule.slow && t.hp > 0) send(t, { t: "slow", ms: rule.slow });
   t.lastHitBy = a.id; // remembered so switching teachers can credit the kill
   t.lastHitAt = Date.now();
   broadcast(room, {
@@ -182,7 +192,7 @@ function hit(a, m) {
     t.lastHitBy = 0;
     t.deaths++;
     a.kills++;
-    const how = m.k === "hammer" ? "banned" : m.k === "beam" ? "beam" : "";
+    const how = { hammer: "banned", beam: "beam", apple: "apple", mine: "mine", hive: "hive" }[m.k] || "";
     broadcast(room, { t: "kill", killer: a.id, victim: t.id, how });
     // siphon: the killer gets full health plus a 50 blue bonus shield
     siphonPlayer(room, a);
@@ -194,7 +204,9 @@ function hit(a, m) {
 // so whoever hit them last (within the window) gets the kill and the siphon.
 function switchTeacher(p, m) {
   const room = p.room;
-  const ch = CHARS[m.char] || CHARS.mahoney;
+  const key = CHARS[m.char] ? m.char : "mahoney";
+  const ch = CHARS[key];
+  p.char = key;
   const killer = room.players.get(p.lastHitBy);
   if (killer && killer !== p && killer.ready && Date.now() - p.lastHitAt < LAST_HIT_WINDOW) {
     p.deaths++;
@@ -215,7 +227,9 @@ function onMessage(p, m) {
 
   if (m.t === "ready") {
     if (p.ready) return;
-    const ch = CHARS[m.char] || CHARS.mahoney;
+    const key = CHARS[m.char] ? m.char : "mahoney";
+    const ch = CHARS[key];
+    p.char = key;
     const s = pickSpawn(room);
     p.x = s[0];
     p.z = s[1];
@@ -225,7 +239,7 @@ function onMessage(p, m) {
     p.lastHitBy = 0;
     p.alive = true;
     p.ready = true;
-    send(p, { t: "respawn", id: p.id, x: p.x, z: p.z, hp: p.hp, max: p.max, bonus: 0 });
+    send(p, { t: "respawn", id: p.id, char: p.char, x: p.x, z: p.z, hp: p.hp, max: p.max, bonus: 0 });
     broadcast(room, { t: "joined", p: pub(p) }, p.id);
     return;
   }
@@ -239,6 +253,7 @@ function onMessage(p, m) {
     p.pitch = num(m.pitch, -2, 2, p.pitch);
     p.sh = m.sh ? 1 : 0;
     p.inv = m.inv ? 1 : 0;
+    p.y = num(m.y, -2, 30, p.y);
   } else if (m.t === "fx") {
     // visual effects (phones, grenades, beams) just get passed on to everyone else
     const a = Array.isArray(m.a) ? m.a.slice(0, 8) : [];
@@ -254,7 +269,7 @@ function onMessage(p, m) {
 wss.on("connection", (ws) => {
   const p = {
     id: nextId++, ws, room: null, name: "Player", ready: false, alive: false,
-    x: 0, z: 0, yaw: 0, pitch: 0, sh: 0, inv: 0, bonus: 0, hp: 275, max: 275,
+    x: 0, z: 0, y: 1, char: "mahoney", yaw: 0, pitch: 0, sh: 0, inv: 0, bonus: 0, hp: 275, max: 275,
     lastHitBy: 0, lastHitAt: 0,
     kills: 0, deaths: 0, hammerAt: 0, hammerHit: new Set(), respawnTimer: null,
   };
@@ -283,7 +298,7 @@ setInterval(() => {
       if (p.ready && p.alive) {
         list.push({
           id: p.id, x: +p.x.toFixed(2), z: +p.z.toFixed(2),
-          yaw: +p.yaw.toFixed(3), pitch: +p.pitch.toFixed(3), sh: p.sh, inv: p.inv,
+          y: +p.y.toFixed(2), yaw: +p.yaw.toFixed(3), pitch: +p.pitch.toFixed(3), sh: p.sh, inv: p.inv,
         });
       }
     }
