@@ -3256,6 +3256,240 @@ function playKillSound() {
   tone(1318, 1318, 0.3, "triangle", 0.12, 0.05);
 }
 
+// ================= ABILITY BAR (bottom right) + universal keys (right side) =================
+abilityHud.style.display = "none"; // the old text list is replaced by the bar below
+ultBox.style.display = "none"; // the ult bar is now the round ult icon
+helpText.style.display = "none"; // the universal keys live on the right side now
+
+const uiStyle = document.createElement("style");
+uiStyle.textContent = `
+@keyframes ultSpin { to { transform: rotate(360deg); } }
+@keyframes ultGlow { 0%,100% { filter: drop-shadow(0 0 6px #ffd54a); } 50% { filter: drop-shadow(0 0 16px #fff2a8); } }
+@keyframes keyPop { 0% { transform: scale(1.25); } 100% { transform: scale(1); } }
+`;
+document.head.appendChild(uiStyle);
+
+const svgIcon = (inner, size) =>
+  '<svg viewBox="0 0 24 24" width="' + (size || 30) + '" height="' + (size || 30) +
+  '" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + inner + "</svg>";
+const ICON = {
+  apple: '<path d="M12 8c-3-2-7 0-7 5 0 4 3 8 5 8 1 0 1.3-.5 2-.5s1 .5 2 .5c2 0 5-4 5-8 0-5-4-7-7-5z"/><path d="M12 8c0-2 1-4 3-5"/>',
+  phones: '<rect x="7" y="3" width="10" height="18" rx="2"/><path d="M11 18h2"/>',
+  dash: '<path d="M4 6l6 6-6 6M12 6l6 6-6 6"/>',
+  grenade: '<rect x="8" y="9" width="8" height="12" rx="1.5"/><path d="M12 2v3M5 5l2 2M19 5l-2 2"/>',
+  shield: '<path d="M12 3l8 3v6c0 5-4 8-8 9-4-1-8-4-8-9V6z"/>',
+  hammer: '<path d="M13 4l7 7-3 3-7-7zM11 10L4 17l3 3 7-7"/>',
+  beegun: '<path d="M3 11h11l3-2 4 2v3h-5l-2 4h-3l1-4H3z"/><path d="M7 7l2 2M11 6l1 3"/>',
+  mine: '<circle cx="12" cy="13" r="4.5"/><path d="M12 3v3M12 20v3M3 13h3M18 13h3M6 7l2 2M16 17l2 2M18 7l-2 2M8 17l-2 2"/>',
+  hive: '<ellipse cx="12" cy="7" rx="4" ry="2.5"/><ellipse cx="12" cy="12" rx="6" ry="3"/><ellipse cx="12" cy="17.5" rx="5" ry="3"/>',
+  bee: '<ellipse cx="12" cy="14" rx="5" ry="6"/><path d="M7 6c-3-3-5 2-2 4M17 6c3-3 5 2 2 4M9 11h6M9 15h6"/>',
+  sun: '<circle cx="12" cy="12" r="5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
+  camera: '<path d="M3 8h4l2-3h6l2 3h4v11H3z"/><circle cx="12" cy="13" r="3.5"/>',
+  wheel: '<rect x="7" y="2" width="10" height="20" rx="5"/><path d="M12 6v4"/>',
+};
+const CHAMFER = "polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px)";
+
+function abilityDefs() {
+  if (current.kind === "applebee") {
+    return {
+      accent: "#ffcc2f",
+      tiles: [
+        { key: "LMB", name: "Apples", icon: ICON.apple, badge: () => String(appleAmmo), reload: true },
+        { key: "RMB", name: "Bee Gun", icon: ICON.beegun, cd: () => [lastBee, current.beeCooldown] },
+        { key: "E", name: "Landmine", icon: ICON.mine, cd: () => [lastGrenade, current.grenadeCooldown], badge: () => mines.length + "/" + current.maxMines },
+        { key: "V", name: "Beehive", icon: ICON.hive },
+      ],
+      ultIcon: ICON.bee,
+    };
+  }
+  return {
+    accent: "#b45cff",
+    tiles: [
+      { key: "LMB", name: "Phones", icon: ICON.phones },
+      { key: "RMB", name: "Shield", icon: ICON.shield, active: () => shieldUp },
+      { key: "Q", name: "Dash", icon: ICON.dash, cd: () => [lastDash, current.dashCooldown] },
+      { key: "E", name: "Grenade", icon: ICON.grenade, cd: () => [lastGrenade, current.grenadeCooldown] },
+      { key: "V", name: "Ban Hammer", icon: ICON.hammer, cd: () => [lastMelee, current.meleeCooldown] },
+    ],
+    ultIcon: ICON.sun,
+  };
+}
+
+const abBar = document.createElement("div");
+abBar.style.cssText =
+  "position:fixed;right:22px;bottom:18px;display:flex;align-items:flex-end;gap:10px;z-index:4;pointer-events:none;font-family:sans-serif;";
+document.body.appendChild(abBar);
+let abKind = "";
+let abEls = [];
+let abUlt = null;
+
+function keycap(text, accent) {
+  const k = document.createElement("div");
+  k.textContent = text;
+  k.style.cssText =
+    "position:absolute;left:50%;bottom:-9px;transform:translateX(-50%);min-width:20px;padding:1px 6px;text-align:center;font:bold 11px sans-serif;color:#fff;background:#0d0d14;border:1.5px solid " +
+    accent + ";border-radius:5px;white-space:nowrap;z-index:2;";
+  return k;
+}
+
+function buildAbilityBar() {
+  const def = abilityDefs();
+  abBar.innerHTML = "";
+  abEls = [];
+  for (const t of def.tiles) {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "position:relative;width:58px;height:58px;margin-bottom:12px;";
+    const tile = document.createElement("div");
+    tile.style.cssText =
+      "position:absolute;inset:0;clip-path:" + CHAMFER + ";background:linear-gradient(135deg," + def.accent + ",#333);";
+    const inner = document.createElement("div");
+    inner.style.cssText =
+      "position:absolute;inset:2px;clip-path:" + CHAMFER + ";background:linear-gradient(160deg,#252535,#12121a);display:flex;align-items:center;justify-content:center;";
+    inner.innerHTML = svgIcon(t.icon, 30);
+    const cdOverlay = document.createElement("div");
+    cdOverlay.style.cssText = "position:absolute;inset:2px;clip-path:" + CHAMFER + ";";
+    const cdText = document.createElement("div");
+    cdText.style.cssText =
+      "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font:bold 17px sans-serif;color:#fff;text-shadow:0 0 4px #000,0 0 4px #000;";
+    const badge = document.createElement("div");
+    badge.style.cssText =
+      "position:absolute;right:4px;top:2px;font:bold 11px sans-serif;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000;";
+    tile.appendChild(inner);
+    tile.appendChild(cdOverlay);
+    wrap.appendChild(tile);
+    wrap.appendChild(cdText);
+    wrap.appendChild(badge);
+    wrap.appendChild(keycap(t.key, def.accent));
+    const cap = document.createElement("div");
+    cap.textContent = t.name;
+    cap.style.cssText =
+      "position:absolute;left:50%;top:-15px;transform:translateX(-50%);font:bold 10px sans-serif;letter-spacing:0.5px;text-transform:uppercase;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000;white-space:nowrap;opacity:0.85;";
+    wrap.appendChild(cap);
+    abBar.appendChild(wrap);
+    abEls.push({ t, wrap, inner, cdOverlay, cdText, badge, last: "" });
+  }
+
+  // round ultimate icon
+  const uw = document.createElement("div");
+  uw.style.cssText = "position:relative;width:80px;height:80px;margin-bottom:12px;margin-left:6px;";
+  const ring = document.createElement("div");
+  ring.style.cssText = "position:absolute;inset:0;border-radius:50%;background:#333;";
+  const uin = document.createElement("div");
+  uin.style.cssText =
+    "position:absolute;inset:6px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#2e2e44,#0f0f16);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;";
+  const uicon = document.createElement("div");
+  uicon.innerHTML = svgIcon(def.ultIcon, 28);
+  const utext = document.createElement("div");
+  utext.style.cssText = "font:bold 11px sans-serif;color:#fff;text-shadow:0 0 3px #000;";
+  uin.appendChild(uicon);
+  uin.appendChild(utext);
+  uw.appendChild(ring);
+  uw.appendChild(uin);
+  uw.appendChild(keycap("X", "#ffd54a"));
+  abBar.appendChild(uw);
+  abUlt = { uw, ring, utext };
+  abKind = current.kind || "mahoney";
+}
+
+function updateAbilityBar(now) {
+  const show = playing;
+  abBar.style.display = show ? "flex" : "none";
+  sideKeys.style.display = show ? "flex" : "none";
+  if (!show) return;
+  if (abKind !== (current.kind || "mahoney")) buildAbilityBar();
+  const def = abilityDefs();
+
+  for (const e of abEls) {
+    const t = e.t;
+    let frac = 0;
+    let secs = "";
+    if (t.cd) {
+      const [last, cd] = t.cd();
+      const left = cd - (now - last);
+      if (cd > 0 && left > 0) {
+        frac = Math.min(1, left / cd);
+        secs = left >= 10000 ? String(Math.ceil(left / 1000)) : (left / 1000).toFixed(1);
+      }
+    }
+    if (t.reload && appleReload > 0) {
+      const left = appleReload - now;
+      frac = Math.max(0, Math.min(1, left / current.reloadMs));
+      secs = (Math.max(0, left) / 1000).toFixed(1);
+    }
+    const active = t.active ? t.active() : false;
+    const ready = frac === 0;
+    const sig = frac.toFixed(3) + secs + active + (t.badge ? t.badge() : "");
+    if (sig === e.last) continue;
+    e.last = sig;
+    e.cdOverlay.style.background = frac > 0 ? "conic-gradient(rgba(0,0,0,0.75) " + frac * 360 + "deg, rgba(0,0,0,0) 0)" : "none";
+    e.cdText.textContent = secs;
+    e.badge.textContent = t.badge ? t.badge() : "";
+    e.wrap.style.filter = active
+      ? "drop-shadow(0 0 9px #ffd54a)"
+      : ready ? "drop-shadow(0 0 4px " + def.accent + "99)" : "none";
+    e.inner.style.opacity = ready || active ? "1" : "0.6";
+  }
+
+  // ult icon: ring fills as it charges, spins rainbow when ready
+  const pct = Math.max(0, Math.min(100, Math.floor((ultCharge / current.ultCost) * 100)));
+  let state = "charge";
+  let label = pct + "%";
+  if (current.kind === "applebee" && beast) {
+    state = "active";
+    label = beast.phase === "out" ? "RECALL" : "BACK";
+  } else if (ultPhase !== 0) {
+    state = "active";
+    label = "ACTIVE";
+  } else if (pct >= 100) {
+    state = "ready";
+    label = "READY";
+  }
+  const usig = state + pct + label;
+  if (usig !== abUlt.last) {
+    abUlt.last = usig;
+    abUlt.utext.textContent = label;
+    if (state === "charge") {
+      abUlt.ring.style.background = "conic-gradient(#ffd54a " + pct * 3.6 + "deg, #3a3a46 0)";
+      abUlt.ring.style.animation = "none";
+      abUlt.uw.style.animation = "none";
+    } else {
+      abUlt.ring.style.background = "conic-gradient(#ff3b3b,#ffb02e,#fff23a,#3bff6a,#33d6ff,#6a5bff,#ff4be0,#ff3b3b)";
+      abUlt.ring.style.animation = "ultSpin 2.2s linear infinite";
+      abUlt.uw.style.animation = state === "ready" ? "ultGlow 1s ease-in-out infinite" : "none";
+    }
+  }
+}
+
+// Universal keys on the right side of the screen (same for every teacher)
+const sideKeys = document.createElement("div");
+sideKeys.style.cssText =
+  "position:fixed;right:14px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:8px;z-index:4;pointer-events:none;font-family:sans-serif;";
+document.body.appendChild(sideKeys);
+function sideChip(capHtml, label) {
+  const c = document.createElement("div");
+  c.style.cssText =
+    "display:flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(10,10,18,0.62);border:1px solid rgba(255,255,255,0.22);border-radius:8px;color:#fff;";
+  const cap = document.createElement("div");
+  cap.innerHTML = capHtml;
+  cap.style.cssText =
+    "min-width:26px;height:26px;display:flex;align-items:center;justify-content:center;font:bold 14px sans-serif;background:#0d0d14;border:1.5px solid #fff;border-radius:6px;padding:0 4px;";
+  const txt = document.createElement("div");
+  txt.style.cssText = "font:bold 12px sans-serif;line-height:14px;text-shadow:0 0 3px #000;";
+  txt.innerHTML = label;
+  c.appendChild(cap);
+  c.appendChild(txt);
+  sideKeys.appendChild(c);
+  return txt;
+}
+const camChipText = sideChip("7", "CAMERA<br><span style='opacity:.7;font-weight:normal'>3rd person</span>");
+sideChip(svgIcon(ICON.wheel, 16), "ZOOM<br><span style='opacity:.7;font-weight:normal'>scroll wheel</span>");
+let camChipLast = null;
+function updateSideKeys() {
+  if (camChipLast === firstPerson) return;
+  camChipLast = firstPerson;
+  camChipText.innerHTML = "CAMERA<br><span style='opacity:.7;font-weight:normal'>" + (firstPerson ? "1st" : "3rd") + " person</span>";
+}
+
 // ================= GAME LOOP =================
 let lastFrame = performance.now();
 
@@ -3537,6 +3771,9 @@ function animate() {
       enemyBullets.splice(i, 1);
     }
   }
+
+  updateAbilityBar(now);
+  updateSideKeys();
 
   // Ability text
   if (current.kind === "applebee") {
