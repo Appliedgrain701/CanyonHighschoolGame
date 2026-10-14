@@ -361,8 +361,8 @@ const characters = {
     dashCooldown: 5000,
     dashDistance: 6,
     // E: phone grenade
-    grenadeCooldown: 10000,
-    grenadeDamage: 125,
+    grenadeCooldown: 11000,
+    grenadeDamage: 100,
     grenadeRadius: 5,
     // Right click (hold): logo shield
     shieldBlock: 0.85, // blocks 85% of damage
@@ -414,7 +414,7 @@ const characters = {
     ultPerKill: 8,
     desc:
       "Health: 200<br>Weapon: 6 Apples (40 dmg each, hitscan)<br>No kill with all 6 = 2s reload<br>" +
-      "A kill = instant refill<br>Right Click: Bee Gun (50 dmg blast + sticky zone)<br>E: Apple Landmine (75 dmg, 6s)<br>V: Beehive (50 dmg + slow)<br>X: coming soon",
+      "A kill = instant refill<br>Right Click: Bee Gun (50 dmg blast + sticky zone)<br>E: Apple Landmine (75 dmg, 6s)<br>V: Beehive (50 dmg + slow)<br>X: ULT - Bee Beast (65 + 10/s + 65), press X again to recall",
   },
 };
 let current = characters.mahoney;
@@ -429,7 +429,7 @@ const BEAM_HIT_RADIUS = 1.4;
 const BEAM_LIFE = 45; // frames a beam stays visible
 const PHONE_VIEW = { x: 0.38, y: -0.36, z: -0.8 }; // where the phone sits in first person
 const NET_RATE = 50; // ms between position updates sent online (20 per second)
-const SERVER_VERSION = 5; // must match server.js (used to warn you if the server is old)
+const SERVER_VERSION = 6; // must match server.js (used to warn you if the server is old)
 const LAST_HIT_WINDOW = 10000; // ms: switching teachers gives the kill to whoever hit you in this time
 
 // ----- BOT SETTINGS (change these to make bots easier or harder) -----
@@ -708,7 +708,7 @@ feed.style.cssText =
   "pointer-events:none;z-index:5;font:bold 15px sans-serif;";
 document.body.appendChild(feed);
 function addFeed(killer, victim, how) {
-  const verb = { banned: "BANNED", beam: "BALDED", apple: "APPLED", mine: "BLEW UP", hive: "BEEHIVED", bee: "STUNG" }[how] || "eliminated";
+  const verb = { banned: "BANNED", beam: "BALDED", apple: "APPLED", mine: "BLEW UP", hive: "BEEHIVED", bee: "STUNG", beast: "MAULED" }[how] || "eliminated";
   const row = document.createElement("div");
   row.style.cssText =
     "background:rgba(0,0,0,0.6);color:#fff;padding:4px 10px;border-radius:4px;border-left:4px solid #ffd700;";
@@ -863,6 +863,7 @@ function showKillBanner(victim, how) {
   else if (how === "mine") bannerSub.textContent = victim + " got BLOWN UP";
   else if (how === "hive") bannerSub.textContent = victim + " got BEEHIVED";
   else if (how === "bee") bannerSub.textContent = victim + " got STUNG";
+  else if (how === "beast") bannerSub.textContent = victim + " got MAULED";
   else bannerSub.textContent = victim + " eliminated";
   banner.style.opacity = "1";
   banner.style.transform = "translateX(-50%) scale(1)";
@@ -1315,7 +1316,7 @@ addEventListener("keydown", (e) => {
     showPlayerModel();
   }
 
-  if (!playing || dead || paused || ultPhase !== 0 || e.repeat) return;
+  if (!playing || dead || paused || ultPhase !== 0 || e.repeat || performance.now() < holdUntil) return;
   if (e.code === "KeyQ" && current.kind !== "applebee") dash();
   if (e.code === "KeyE") throwGrenade();
   if (e.code === "KeyV") melee();
@@ -1610,6 +1611,7 @@ function updateBots(dt, t) {
     const pos = bot.mesh.position;
     bot.flash = Math.max(0, bot.flash - dt);
     bot.mesh.material.color.setHex(bot.flash > 0 ? 0xffffff : bot.color);
+    if (bot.held) continue; // grabbed by the bee beast
 
     // forget a target that died
     if (bot.target && !isAlive(bot.target)) {
@@ -2093,6 +2095,12 @@ function handleNet(m) {
       slowUntil = Math.max(slowUntil, nowS + (m.ms || 2000));
       break;
     }
+    case "hold": {
+      if (performance.now() >= holdUntil) addFeedText("TAKEN by the bee beast!");
+      holdUntil = performance.now() + 250;
+      holdPos.set(m.x, m.y, m.z);
+      break;
+    }
     case "error": {
       failOnline(m.msg || "Could not join.");
       break;
@@ -2129,6 +2137,25 @@ function handleFx(m) {
       boomAt(new THREE.Vector3(a[0], a[1] + 0.5, a[2]), 2.5);
     }
   } else if (m.k === "c") clearRemoteMines(m.id);
+  else if (m.k === "q") addFeedText(r.name + " unleashed the BEE BEAST!");
+  else if (m.k === "w") {
+    let rb = remoteBeasts.get(m.id);
+    if (!rb) {
+      rb = { mesh: makeBeastMesh(), target: new THREE.Vector3(), yaw: 0, last: 0 };
+      rb.mesh.position.set(a[0], a[1], a[2]);
+      scene.add(rb.mesh);
+      remoteBeasts.set(m.id, rb);
+    }
+    rb.target.set(a[0], a[1], a[2]);
+    rb.yaw = a[3];
+    rb.last = performance.now();
+  } else if (m.k === "e") {
+    const rb = remoteBeasts.get(m.id);
+    if (rb) {
+      scene.remove(rb.mesh);
+      remoteBeasts.delete(m.id);
+    }
+  }
   else if (m.k === "v") {
     r.beeStart = performance.now();
     spawnBeeFx(new THREE.Vector3(a[0], a[1], a[2]), new THREE.Vector3(a[3], a[4], a[5]));
@@ -2206,7 +2233,7 @@ function shoot() {
 }
 
 function tryShoot() {
-  if (!playing || dead || paused || ultPhase !== 0 || shieldUp || meleeStart > 0) return;
+  if (!playing || dead || paused || ultPhase !== 0 || shieldUp || meleeStart > 0 || performance.now() < holdUntil) return;
   if (!document.pointerLockElement) return;
   const now = performance.now();
   if (now - lastShot < current.fireDelay) return;
@@ -2357,7 +2384,15 @@ const beamGeo = new THREE.CylinderGeometry(1, 1, 1, 12, 1, true);
 
 function startUlt() {
   if (current.kind === "applebee") {
-    addFeedText("Ms. Applebee has no ult yet");
+    if (beast) {
+      // X again = call the beast back to her
+      if (beast.phase === "out") {
+        beast.phase = "back";
+        beast.backAt = performance.now();
+      }
+      return;
+    }
+    if (ultCharge >= current.ultCost) castBeast();
     return;
   }
   if (ultPhase !== 0 || ultCharge < current.ultCost) return;
@@ -2559,6 +2594,8 @@ function resetApples() {
   slowUntil = 0;
   lastBee = -99999;
   beeAnimStart = 0;
+  holdUntil = 0;
+  if (beast) endBeast(true);
   clearMines();
   clearZones();
   viewPhoneImg.material = current.kind === "applebee" ? appleMeshMat : phoneMat;
@@ -2894,6 +2931,191 @@ function fireBeeGun() {
   }
 }
 
+// ----- Ms. Applebee ULT: Bee Beast -----
+const BEAST = { speed: 16, backSpeed: 24, range: 45, radius: 2.6, grab: 65, tick: 5, tickMs: 500, end: 65, maxMs: 9000 };
+let beast = null;
+const remoteBeasts = new Map();
+let holdUntil = 0; // while you are grabbed by a beast
+const holdPos = new THREE.Vector3();
+
+function makeBeastMesh() {
+  const g = new THREE.Group();
+  const yellow = new THREE.MeshStandardMaterial({ color: 0xf5c518 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x1b1b1b });
+  const body = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 16), yellow);
+  body.scale.set(1.5, 1.3, 2.0);
+  g.add(body);
+  for (const z of [-0.8, 0, 0.8]) {
+    const f = Math.sqrt(1 - (z / 2) * (z / 2));
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(1, 0.13, 8, 28), dark);
+    ring.scale.set(1.5 * f * 1.02, 1.3 * f * 1.02, 1);
+    ring.position.z = z;
+    g.add(ring);
+  }
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.9, 16, 12), yellow);
+  head.position.set(0, 0.1, -2.1);
+  g.add(head);
+  for (const sx of [-1, 1]) {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.24, 10, 10), dark);
+    eye.position.set(sx * 0.45, 0.35, -2.8);
+    g.add(eye);
+    const ant = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 1.1, 6), dark);
+    ant.position.set(sx * 0.4, 1.0, -2.5);
+    ant.rotation.x = -0.5;
+    ant.rotation.z = -sx * 0.3;
+    g.add(ant);
+  }
+  const sting = new THREE.Mesh(new THREE.ConeGeometry(0.4, 1.2, 10), dark);
+  sting.rotation.x = Math.PI / 2;
+  sting.position.z = 2.5;
+  g.add(sting);
+  const wingMat = new THREE.MeshBasicMaterial({ color: 0xcfefff, transparent: true, opacity: 0.55, side: THREE.DoubleSide });
+  const wings = [];
+  for (const sx of [-1, 1]) {
+    const pivot = new THREE.Group();
+    pivot.position.set(sx * 0.9, 1.1, 0);
+    const wing = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 1.5), wingMat);
+    wing.rotation.x = -Math.PI / 2;
+    wing.position.x = sx * 1.4;
+    pivot.add(wing);
+    g.add(pivot);
+    wings.push(pivot);
+  }
+  g.userData.wings = wings;
+  g.scale.setScalar(1.1);
+  return g;
+}
+function flapWings(mesh, now) {
+  const a = 0.35 + Math.sin(now / 35) * 0.55;
+  mesh.userData.wings[0].rotation.z = -a;
+  mesh.userData.wings[1].rotation.z = a;
+}
+
+function castBeast() {
+  const now = performance.now();
+  ultCharge = 0;
+  const eye = new THREE.Vector3(player.position.x, player.position.y + 0.7, player.position.z);
+  const f = aimDirection(eye);
+  const yaw0 = Math.atan2(-f.x, -f.z);
+  const dir = new THREE.Vector3(-Math.sin(yaw0), 0, -Math.cos(yaw0));
+  const mesh = makeBeastMesh();
+  scene.add(mesh);
+  const pos = new THREE.Vector3(player.position.x + dir.x * 2.5, player.position.y + 0.3, player.position.z + dir.z * 2.5);
+  mesh.position.copy(pos);
+  beast = { mesh, pos, dir, phase: "out", traveled: 0, t0: now, backAt: 0, captured: new Map(), nextTick: now + BEAST.tickMs, lastSend: 0 };
+  addFeedText("BEE BEAST! Press X to call it back");
+  netFx("q", []);
+  playBeeShot();
+}
+
+// silent = true: nobody takes the final damage (you died / switched teacher)
+function endBeast(silent) {
+  if (!beast) return;
+  for (const [, c] of beast.captured) {
+    if (c.bot) {
+      c.bot.held = false;
+      c.bot.mesh.position.y = 1;
+      if (!silent && c.bot.alive) damageBot(c.bot, BEAST.end, "beast", "player");
+    } else if (!silent) netSend({ t: "hit", target: c.id, k: "beastend" });
+  }
+  scene.remove(beast.mesh);
+  netFx("e", []);
+  beast = null;
+}
+
+function updateBeast(dt, now) {
+  // other players' beasts (just the picture)
+  for (const [id, rb] of remoteBeasts) {
+    rb.mesh.position.lerp(rb.target, 1 - Math.exp(-dt * 14));
+    rb.mesh.rotation.y = rb.yaw;
+    flapWings(rb.mesh, now);
+    if (now - rb.last > 700) {
+      scene.remove(rb.mesh);
+      remoteBeasts.delete(id);
+    }
+  }
+  if (!beast) return;
+  if (dead || !playing) {
+    endBeast(true);
+    return;
+  }
+  const b = beast;
+  flapWings(b.mesh, now);
+
+  if (b.phase === "out") {
+    const probe = { x: b.pos.x + b.dir.x * BEAST.radius * 0.8, y: b.pos.y - 0.5, z: b.pos.z + b.dir.z * BEAST.radius * 0.8 };
+    if (insideWall(probe)) { endBeast(); return; }
+    const step = BEAST.speed * dt;
+    b.pos.addScaledVector(b.dir, step);
+    b.traveled += step;
+    if (b.traveled >= BEAST.range) { endBeast(); return; }
+  } else {
+    const to = new THREE.Vector3(player.position.x - b.pos.x, 0, player.position.z - b.pos.z);
+    if (to.length() < 2.8 || now - b.backAt > 5000) { endBeast(); return; }
+    to.normalize();
+    b.dir.copy(to);
+    b.pos.addScaledVector(to, BEAST.backSpeed * dt);
+    b.pos.y += (player.position.y + 0.3 - b.pos.y) * Math.min(1, dt * 6);
+  }
+  if (now - b.t0 > BEAST.maxMs) { endBeast(); return; }
+  b.mesh.position.copy(b.pos);
+  b.mesh.rotation.y = Math.atan2(-b.dir.x, -b.dir.z);
+
+  // grab everyone it touches (65 damage on the grab)
+  const near = (p) => Math.hypot(p.x - b.pos.x, p.z - b.pos.z) < BEAST.radius + 0.4 && Math.abs(p.y - b.pos.y) < 3;
+  for (const bot of bots) {
+    if (bot.alive && !b.captured.has(bot) && near(bot.mesh.position)) {
+      b.captured.set(bot, { bot });
+      bot.held = true;
+      damageBot(bot, BEAST.grab, "beast", "player");
+    }
+  }
+  for (const r of remotes.values()) {
+    if (r.alive && !b.captured.has(r.id) && near(r.mesh.position)) {
+      b.captured.set(r.id, { id: r.id });
+      netSend({ t: "hit", target: r.id, k: "beast" });
+    }
+  }
+
+  // carry them along
+  const ids = [];
+  for (const [key, c] of b.captured) {
+    if (c.bot) {
+      if (!c.bot.alive) {
+        c.bot.held = false;
+        b.captured.delete(key);
+        continue;
+      }
+      c.bot.mesh.position.set(b.pos.x, Math.max(1, b.pos.y), b.pos.z);
+    } else {
+      const r = remotes.get(c.id);
+      if (!r || !r.alive) {
+        b.captured.delete(key);
+        continue;
+      }
+      r.tx = b.pos.x;
+      r.tz = b.pos.z;
+      r.ty = b.pos.y;
+      ids.push(c.id);
+    }
+  }
+
+  // 10 damage per second while they are held (5 every half second)
+  if (now >= b.nextTick) {
+    b.nextTick = now + BEAST.tickMs;
+    for (const [, c] of b.captured) {
+      if (c.bot) damageBot(c.bot, BEAST.tick, "beast", "player");
+      else netSend({ t: "hit", target: c.id, k: "beasttick" });
+    }
+  }
+
+  if (now - b.lastSend > 50) {
+    b.lastSend = now;
+    if (ids.length) netSend({ t: "hold", ids, x: +b.pos.x.toFixed(2), y: +b.pos.y.toFixed(2), z: +b.pos.z.toFixed(2) });
+    netFx("w", [b.pos.x, b.pos.y, b.pos.z, Math.atan2(-b.dir.x, -b.dir.z)]);
+  }
+}
+
 // Per-frame: reload timer, circling apples, flying apple pictures
 function updateApples(now) {
   if (appleReload > 0 && now >= appleReload) {
@@ -3060,7 +3282,7 @@ function animate() {
     playing && !dead && !paused && current.shieldBlock > 0 && ultPhase === 0 && rightHeld && meleeStart === 0 && !!document.pointerLockElement;
 
   // Movement (not while the Esc menu is open)
-  if (playing && !dead && !paused && ultPhase === 0) {
+  if (playing && !dead && !paused && ultPhase === 0 && now >= holdUntil) {
     const moveSpeed = (shieldUp ? speed * current.shieldSpeed : speed) * (now < slowUntil ? 0.5 : 1);
     const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
     const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
@@ -3086,7 +3308,11 @@ function animate() {
     if (mouseHeld) tryShoot();
   }
   pushOutOfWalls(player.position, player.position.y - 1, STEP_HEIGHT);
-  physicsStep(dt, playing && !dead && !paused && ultPhase === 0);
+  physicsStep(dt, playing && !dead && !paused && ultPhase === 0 && now >= holdUntil);
+  if (now < holdUntil) {
+    player.position.lerp(holdPos, 0.6);
+    velY = 0;
+  }
   checkPads(now);
   player.rotation.y = yaw;
 
@@ -3112,6 +3338,7 @@ function animate() {
   updateRemotes(dt, now);
   updateApples(now);
   updateZones(now);
+  updateBeast(dt, now);
   updateCrosshair();
   checkMines(now);
 
@@ -3339,7 +3566,7 @@ function animate() {
   const ultReady = ultPct >= 100;
   ultFill.style.width = ultPct + "%";
   ultFill.className = ultReady || ultPhase !== 0 ? "rainbow" : "ultGold";
-  if (current.kind === "applebee") ultLabel.textContent = "ULT: coming soon";
+  if (current.kind === "applebee" && beast) ultLabel.textContent = beast.phase === "out" ? "BEE BEAST - X: RECALL" : "BEE BEAST RETURNING";
   else if (ultPhase !== 0) ultLabel.textContent = "BALDING!";
   else if (ultReady) ultLabel.textContent = "ULT READY - PRESS X";
   else ultLabel.textContent = "ULT " + ultPct + "%";
