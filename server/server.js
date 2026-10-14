@@ -2,7 +2,7 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const SERVER_VERSION = 5; // the game warns players if this doesn't match game.js
+const SERVER_VERSION = 6; // the game warns players if this doesn't match game.js
 const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 12;
 const RESPAWN_MS = 3000;
@@ -11,13 +11,16 @@ const CHARS = { mahoney: { health: 275 }, applebee: { health: 200 } };
 // The SERVER decides damage, so players can't edit their own numbers
 const RULES = {
   phone: { dmg: 10, range: 95 },
-  grenade: { dmg: 125, range: 70 },
+  grenade: { dmg: 100, range: 70 },
   beam: { dmg: 150, range: 110 },
   hammer: { dmg: 99999, range: 10 }, // the only one-shot move
   apple: { dmg: 40, range: 125 }, // Ms. Applebee hitscan apple
   mine: { dmg: 75, range: 90 }, // Ms. Applebee landmine
   hive: { dmg: 50, range: 10, slow: 2000 }, // Ms. Applebee beehive (slows for 2s)
   bee: { dmg: 50, range: 125 }, // Ms. Applebee bee gun blast
+  beast: { dmg: 65, range: 160 }, // Ms. Applebee ult: grab
+  beasttick: { dmg: 5, range: 160 }, // ult: 5 every half second = 10/s while held
+  beastend: { dmg: 65, range: 160 }, // ult: final hit when it lets go
   beezone: { dmg: 15, range: 125, slow: 1500 }, // the sticky zone's one tick of damage + slow
   beeslow: { dmg: 0, range: 125, slow: 600 }, // standing in the zone keeps you slowed
 };
@@ -177,6 +180,23 @@ function hit(a, m) {
     }
     a.beeHit.add(t.id);
   }
+  if (m.k === "beast" || m.k === "beasttick" || m.k === "beastend") {
+    // the beast can grab someone once per ult, then tick, then let go once
+    const nowG = Date.now();
+    a.grabs = a.grabs || new Map();
+    const g = a.grabs.get(t.id);
+    if (m.k === "beast") {
+      if (g && nowG - g.at < 8000) return;
+      a.grabs.set(t.id, { at: nowG, ended: false, tickAt: 0 });
+    } else {
+      if (!g || g.ended || nowG - g.at > 12000) return;
+      if (m.k === "beastend") g.ended = true;
+      else {
+        if (nowG - g.tickAt < 300) return;
+        g.tickAt = nowG;
+      }
+    }
+  }
   if (t.inv) return; // can't be hurt during the ult
   if (rule.dmg === 0) {
     if (rule.slow) send(t, { t: "slow", ms: rule.slow });
@@ -210,7 +230,7 @@ function hit(a, m) {
     t.lastHitBy = 0;
     t.deaths++;
     a.kills++;
-    const how = { hammer: "banned", beam: "beam", apple: "apple", mine: "mine", hive: "hive", bee: "bee", beezone: "bee" }[m.k] || "";
+    const how = { hammer: "banned", beam: "beam", apple: "apple", mine: "mine", hive: "hive", bee: "bee", beezone: "bee", beast: "beast", beasttick: "beast", beastend: "beast" }[m.k] || "";
     broadcast(room, { t: "kill", killer: a.id, victim: t.id, how });
     // siphon: the killer gets full health plus a 50 blue bonus shield
     siphonPlayer(room, a);
@@ -277,6 +297,16 @@ function onMessage(p, m) {
     const a = Array.isArray(m.a) ? m.a.slice(0, 8) : [];
     if (!a.every((v) => typeof v === "number" && Number.isFinite(v))) return;
     broadcast(room, { t: "fx", id: p.id, k: String(m.k).slice(0, 2), a }, p.id);
+  } else if (m.t === "hold") {
+    // the beast owner says where the grabbed players are; tell each grabbed player to move there
+    const ids = Array.isArray(m.ids) ? m.ids.slice(0, 11) : [];
+    const hx = num(m.x, -50, 50, 0), hy = num(m.y, -2, 30, 1), hz = num(m.z, -50, 50, 0);
+    const nowH = Date.now();
+    for (const id of ids) {
+      const t = room.players.get(id);
+      const g = p.grabs && p.grabs.get(id);
+      if (t && t !== p && t.alive && !t.inv && g && !g.ended && nowH - g.at < 12000) send(t, { t: "hold", x: hx, y: hy, z: hz });
+    }
   } else if (m.t === "hit") {
     hit(p, m);
   } else if (m.t === "switch") {
