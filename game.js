@@ -429,7 +429,7 @@ const BEAM_HIT_RADIUS = 1.4;
 const BEAM_LIFE = 45; // frames a beam stays visible
 const PHONE_VIEW = { x: 0.38, y: -0.36, z: -0.8 }; // where the phone sits in first person
 const NET_RATE = 50; // ms between position updates sent online (20 per second)
-const SERVER_VERSION = 6; // must match server.js (used to warn you if the server is old)
+const SERVER_VERSION = 7; // must match server.js (used to warn you if the server is old)
 const LAST_HIT_WINDOW = 10000; // ms: switching teachers gives the kill to whoever hit you in this time
 
 // ----- BOT SETTINGS (change these to make bots easier or harder) -----
@@ -500,7 +500,7 @@ const remotes = new Map(); // other online players
 // Random name on purpose: no typing, so nobody can type something inappropriate
 const NAME_A = ["Swift", "Brave", "Sneaky", "Mighty", "Lucky", "Clever", "Wild", "Silent"];
 const NAME_B = ["Cougar", "Tiger", "Panther", "Falcon", "Wolf", "Bear", "Shark", "Eagle"];
-const myName =
+let myName =
   NAME_A[Math.floor(Math.random() * NAME_A.length)] + " " +
   NAME_B[Math.floor(Math.random() * NAME_B.length)] + " " +
   (10 + Math.floor(Math.random() * 90));
@@ -660,22 +660,59 @@ styleEl.textContent = `
 `;
 document.head.appendChild(styleEl);
 
+const hudStyle = document.createElement("style");
+hudStyle.textContent = "@keyframes lowHp { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.7); } }";
+document.head.appendChild(hudStyle);
+const HUD_CH = "polygon(9px 0,100% 0,100% calc(100% - 9px),calc(100% - 9px) 100%,0 100%,0 9px)";
 const healthBox = document.createElement("div");
 healthBox.style.cssText =
-  "position:fixed;bottom:20px;left:20px;width:250px;height:24px;background:#333;border:2px solid #fff;";
-const healthFill = document.createElement("div");
-healthFill.style.cssText = "height:100%;width:100%;background:#2ecc40;";
-const healthText = document.createElement("div");
-healthText.style.cssText =
-  "position:absolute;top:0;left:0;width:100%;text-align:center;font:bold 14px/24px sans-serif;color:#fff;text-shadow:1px 1px 2px #000;";
-healthBox.appendChild(healthFill);
-healthBox.appendChild(healthText);
+  "position:fixed;left:22px;bottom:20px;width:340px;z-index:4;pointer-events:none;font-family:'Segoe UI',Arial,sans-serif;color:#fff;";
+const hpName = document.createElement("div");
+hpName.style.cssText = "font-size:13px;font-weight:800;letter-spacing:2px;text-shadow:0 0 4px #000,0 0 4px #000;margin-bottom:5px;";
+healthBox.appendChild(hpName);
 
-// Blue bonus shield: a blue strip on top of the health bar + a blue bubble around you
+// blue bonus shield (from siphon) sits above the health bar
+const shieldRow = document.createElement("div");
+shieldRow.style.cssText = "display:flex;align-items:center;gap:7px;margin-bottom:5px;transition:opacity .2s;";
+shieldRow.innerHTML =
+  '<svg viewBox="0 0 24 24" width="18" height="18" fill="#2f8bff" stroke="#9bd0ff" stroke-width="1.5" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-4 8-8 9-4-1-8-4-8-9V6z"/></svg>';
+const shieldTrack = document.createElement("div");
+shieldTrack.style.cssText =
+  "flex:1;height:11px;background:rgba(8,12,26,0.85);border:1px solid #2f8bff88;border-radius:3px;overflow:hidden;";
 const bonusFill = document.createElement("div");
 bonusFill.style.cssText =
-  "position:absolute;top:0;left:0;height:8px;width:0%;background:#2f8bff;box-shadow:0 0 8px #2f8bff;";
-healthBox.appendChild(bonusFill);
+  "height:100%;width:0%;background:linear-gradient(90deg,#1e6fff,#74c0ff);box-shadow:0 0 10px #2f8bff;transition:width .2s;";
+shieldTrack.appendChild(bonusFill);
+const bonusText = document.createElement("div");
+bonusText.style.cssText = "min-width:26px;font-size:13px;font-weight:800;color:#9bd0ff;text-shadow:0 0 3px #000;";
+shieldRow.appendChild(shieldTrack);
+shieldRow.appendChild(bonusText);
+healthBox.appendChild(shieldRow);
+
+// health bar: white "damage trail", colored fill, tick marks every 50 HP, number in the middle
+const hpFrame = document.createElement("div");
+hpFrame.style.cssText =
+  "position:relative;height:34px;clip-path:" + HUD_CH + ";background:linear-gradient(135deg,#ffffff,#6f7a9c);";
+const hpTrack = document.createElement("div");
+hpTrack.style.cssText = "position:absolute;inset:2px;clip-path:" + HUD_CH + ";background:rgba(8,12,26,0.92);overflow:hidden;";
+const healthLag = document.createElement("div");
+healthLag.style.cssText = "position:absolute;left:0;top:0;height:100%;width:100%;background:rgba(255,255,255,0.55);";
+const healthFill = document.createElement("div");
+healthFill.style.cssText =
+  "position:absolute;left:0;top:0;height:100%;width:100%;background:linear-gradient(90deg,#27c46b,#7bf0a4);transition:width .12s;";
+const hpTicks = document.createElement("div");
+hpTicks.style.cssText =
+  "position:absolute;inset:0;background-image:linear-gradient(90deg,transparent calc(100% - 1px),rgba(0,0,0,0.5) 0);background-size:20% 100%;";
+const healthText = document.createElement("div");
+healthText.style.cssText =
+  "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:800;text-shadow:0 0 4px #000,0 0 4px #000;";
+hpTrack.appendChild(healthLag);
+hpTrack.appendChild(healthFill);
+hpTrack.appendChild(hpTicks);
+hpTrack.appendChild(healthText);
+hpFrame.appendChild(hpTrack);
+healthBox.appendChild(hpFrame);
+let lastHpPct = 1;
 const bonusBubble = new THREE.Mesh(
   new THREE.SphereGeometry(1.5, 16, 16),
   new THREE.MeshBasicMaterial({ color: 0x3a8bff, transparent: true, opacity: 0.22, depthWrite: false })
@@ -875,12 +912,28 @@ function showKillBanner(victim, how) {
 }
 
 function updateHealthBar() {
-  healthFill.style.width = (playerHealth / maxHealth) * 100 + "%";
+  const pct = Math.max(0, Math.min(1, playerHealth / maxHealth));
+  healthFill.style.width = pct * 100 + "%";
+  if (pct > lastHpPct) {
+    healthLag.style.transition = "none"; // healing: no trail
+  } else {
+    healthLag.style.transition = "width 0.8s ease 0.35s"; // damage: white trail slides down
+  }
+  healthLag.style.width = pct * 100 + "%";
+  lastHpPct = pct;
+  healthFill.style.background =
+    pct > 0.5 ? "linear-gradient(90deg,#27c46b,#7bf0a4)"
+    : pct > 0.25 ? "linear-gradient(90deg,#e0a21a,#ffd45c)"
+    : "linear-gradient(90deg,#d62839,#ff6b6b)";
+  healthFill.style.animation = pct <= 0.25 && playerHealth > 0 ? "lowHp 0.7s infinite" : "none";
+  hpTicks.style.backgroundSize = (50 / maxHealth) * 100 + "% 100%";
   bonusFill.style.width = (bonusShield / BONUS_SHIELD) * 100 + "%";
+  bonusText.textContent = bonusShield > 0 ? Math.ceil(bonusShield) : "";
+  shieldRow.style.opacity = bonusShield > 0 ? "1" : "0.3";
   bonusBubble.visible = bonusShield > 0;
-  healthBox.style.borderColor = bonusShield > 0 ? "#2f8bff" : "#fff";
-  healthText.textContent =
-    Math.ceil(playerHealth) + " / " + maxHealth + (bonusShield > 0 ? "  +" + Math.ceil(bonusShield) : "");
+  healthText.innerHTML =
+    '<span style="font-size:20px">' + Math.ceil(playerHealth) + '</span><span style="font-size:12px;opacity:.7">&nbsp;/ ' + maxHealth + "</span>";
+  hpName.textContent = myName.toUpperCase() + "  \u00b7  " + current.name.toUpperCase();
 }
 updateHealthBar();
 
@@ -890,39 +943,251 @@ function cooldownText(label, key, last, cooldown) {
 }
 
 // ================= MENUS =================
+const THEME = { gold: "#ffcc2f", line: "#2a3763" };
 const MENU_STYLE =
-  "position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:10;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif;color:#fff;";
+  "position:fixed;inset:0;background:radial-gradient(ellipse at 50% 15%,#1c2a5a 0%,#0a0f24 55%,#05070f 100%);z-index:10;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:'Segoe UI',Arial,sans-serif;color:#fff;";
 const BTN_STYLE =
-  "padding:14px 30px;border:3px solid #fff;border-radius:10px;background:#222;font-size:20px;font-weight:bold;cursor:pointer;";
+  "padding:13px 30px;border:2px solid #3b4a85;border-radius:10px;background:#18213f;font-size:18px;font-weight:bold;letter-spacing:1px;cursor:pointer;";
 
-// ----- Mode select screen -----
+// ----- Home screen: your name + pick a mode -----
+const menuStyleEl = document.createElement("style");
+menuStyleEl.textContent = `
+body h1 { letter-spacing: 4px; font-weight: 800; text-shadow: 0 2px 14px rgba(0,0,0,0.6); }
+@keyframes menuFloat { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+`;
+document.head.appendChild(menuStyleEl);
+
 const modeOverlay = document.createElement("div");
 modeOverlay.style.cssText = MENU_STYLE;
-modeOverlay.innerHTML = '<h1 style="margin:0 0 30px;font-size:42px;">CHOOSE A MODE</h1>';
+
+const homeLogo = document.createElement("img");
+homeLogo.src = "logo.png";
+homeLogo.style.cssText =
+  "height:88px;margin-bottom:8px;display:none;filter:drop-shadow(0 4px 14px rgba(0,0,0,0.7));animation:menuFloat 4s ease-in-out infinite;";
+homeLogo.onload = () => (homeLogo.style.display = "block");
+modeOverlay.appendChild(homeLogo);
+
+const homeTitle = document.createElement("div");
+homeTitle.style.cssText = "text-align:center;margin-bottom:22px;";
+homeTitle.innerHTML =
+  '<div style="font-size:56px;font-weight:900;letter-spacing:7px;line-height:1;text-shadow:0 4px 20px rgba(0,0,0,0.7);">CANYON <span style="color:' +
+  THEME.gold + ';">ARENA</span></div>' +
+  '<div style="margin-top:8px;font-size:14px;letter-spacing:6px;opacity:0.65;">TEACHER SHOWDOWN</div>';
+modeOverlay.appendChild(homeTitle);
+
+// --- name box ---
+const BAD_WORDS = ["fuck", "shit", "bitch", "cunt", "dick", "cock", "pussy", "nigg", "fagg", "slut", "whore", "rape", "nazi", "hitler", "porn", "penis", "vagina", "asshole", "bastard"];
+function nameLooksBad(n) {
+  const map = { 0: "o", 1: "i", 3: "e", 4: "a", 5: "s", 7: "t" };
+  const squashed = n.toLowerCase().replace(/[01345 7]/g, (c) => map[c] || "").replace(/[^a-z]/g, "");
+  return BAD_WORDS.some((w) => squashed.includes(w));
+}
+function randomName() {
+  return (
+    NAME_A[Math.floor(Math.random() * NAME_A.length)] + " " +
+    NAME_B[Math.floor(Math.random() * NAME_B.length)] + " " +
+    (10 + Math.floor(Math.random() * 90))
+  );
+}
+function cleanName(v) {
+  return String(v).replace(/[^A-Za-z0-9 ]/g, "").replace(/\s+/g, " ").trim().slice(0, 16);
+}
+
+const nameBox = document.createElement("div");
+nameBox.style.cssText =
+  "display:flex;align-items:center;gap:12px;padding:10px 14px 10px 18px;background:rgba(19,26,48,0.9);border:1px solid " +
+  THEME.line + ";border-radius:14px;box-shadow:0 8px 30px rgba(0,0,0,0.4);";
+const nameLabel = document.createElement("div");
+nameLabel.textContent = "YOUR NAME";
+nameLabel.style.cssText = "font-size:12px;font-weight:bold;letter-spacing:3px;opacity:0.65;";
+const nameInput = document.createElement("input");
+nameInput.maxLength = 16;
+nameInput.placeholder = "Type a name";
+nameInput.style.cssText =
+  "width:230px;padding:10px 14px;font-size:20px;font-weight:bold;text-align:center;border:2px solid #3b4a85;border-radius:10px;background:#0b1020;color:#fff;outline:none;";
+try {
+  nameInput.value = localStorage.getItem("ca_name") || myName;
+} catch (e) {
+  nameInput.value = myName;
+}
+nameInput.addEventListener("focus", () => (nameInput.style.borderColor = THEME.gold));
+nameInput.addEventListener("blur", () => (nameInput.style.borderColor = "#3b4a85"));
+nameInput.addEventListener("input", () => {
+  nameInput.value = nameInput.value.replace(/[^A-Za-z0-9 ]/g, "");
+});
+// typing in the box must not trigger game keys (like 7 = camera)
+nameInput.addEventListener("keydown", (e) => e.stopPropagation());
+nameInput.addEventListener("keyup", (e) => e.stopPropagation());
+const randBtn = document.createElement("div");
+randBtn.textContent = "RANDOM";
+randBtn.style.cssText = BTN_STYLE + "padding:9px 16px;font-size:13px;letter-spacing:2px;";
+randBtn.addEventListener("mouseenter", () => (randBtn.style.background = "#2a3a73"));
+randBtn.addEventListener("mouseleave", () => (randBtn.style.background = "#18213f"));
+randBtn.addEventListener("click", () => {
+  nameInput.value = randomName();
+  nameMsg.textContent = "";
+});
+nameBox.appendChild(nameLabel);
+nameBox.appendChild(nameInput);
+nameBox.appendChild(randBtn);
+modeOverlay.appendChild(nameBox);
+const nameMsg = document.createElement("div");
+nameMsg.style.cssText = "margin-top:8px;font-size:14px;color:#ff6b6b;min-height:18px;";
+modeOverlay.appendChild(nameMsg);
+
+// Saves the name you typed. Returns false if it isn't allowed.
+function commitName() {
+  let n = cleanName(nameInput.value);
+  if (!n) n = randomName();
+  if (nameLooksBad(n)) {
+    nameMsg.textContent = "That name isn't allowed. Please pick another one.";
+    return false;
+  }
+  nameMsg.textContent = "";
+  myName = n;
+  nameInput.value = n;
+  try {
+    localStorage.setItem("ca_name", n);
+  } catch (e) {}
+  updateHealthBar();
+  return true;
+}
+
+const modeHeading = document.createElement("div");
+modeHeading.textContent = "CHOOSE A MODE";
+modeHeading.style.cssText = "margin:10px 0 18px;font-size:14px;font-weight:bold;letter-spacing:5px;opacity:0.7;";
+modeOverlay.appendChild(modeHeading);
 const modeRow = document.createElement("div");
-modeRow.style.cssText = "display:flex;gap:20px;";
+modeRow.style.cssText = "display:flex;gap:22px;flex-wrap:wrap;justify-content:center;";
 modeOverlay.appendChild(modeRow);
 const modeMsg = document.createElement("div");
 modeMsg.style.cssText =
-  "margin-top:22px;font-size:16px;color:#ff6b6b;min-height:20px;text-align:center;max-width:700px;";
+  "margin-top:20px;font-size:16px;color:#ff6b6b;min-height:20px;text-align:center;max-width:700px;";
 modeOverlay.appendChild(modeMsg);
 document.body.appendChild(modeOverlay);
 
-function makeModeCard(title, desc, enabled, onClick) {
+const MODE_ICONS = {
+  bots: '<rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 8V4M9 13h.01M15 13h.01M9 17h6"/><circle cx="12" cy="3.5" r="1"/>',
+  online: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/>',
+  private: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3M12 15v2"/>',
+};
+function makeModeCard(title, desc, enabled, onClick, icon) {
   const card = document.createElement("div");
   card.style.cssText =
-    "width:240px;padding:24px;border:3px solid " + (enabled ? "#fff" : "#555") +
-    ";border-radius:10px;background:#222;text-align:center;" +
+    "width:250px;padding:26px 22px 24px;border:2px solid " + THEME.line + ";border-radius:18px;background:linear-gradient(180deg,#18213f,#0f1530);text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.45);transition:transform .15s,border-color .15s,box-shadow .15s;" +
     (enabled ? "cursor:pointer;" : "opacity:0.4;");
   card.innerHTML =
-    '<div style="font-size:26px;font-weight:bold;margin-bottom:12px;">' + title + "</div>" +
-    '<div style="font-size:14px;line-height:22px;">' + desc + "</div>";
+    '<div style="width:68px;height:68px;margin:0 auto 14px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#3a4e9a,#18213f);display:flex;align-items:center;justify-content:center;border:2px solid #3b4a85;">' +
+    '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#ffcc2f" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' + (icon || "") + "</svg></div>" +
+    '<div style="font-size:22px;font-weight:800;letter-spacing:2px;margin-bottom:10px;">' + title + "</div>" +
+    '<div style="font-size:14px;line-height:21px;opacity:0.75;">' + desc + "</div>";
   if (enabled) {
-    card.addEventListener("mouseenter", () => (card.style.background = "#444"));
-    card.addEventListener("mouseleave", () => (card.style.background = "#222"));
+    card.addEventListener("mouseenter", () => {
+      card.style.transform = "translateY(-8px)";
+      card.style.borderColor = THEME.gold;
+      card.style.boxShadow = "0 16px 40px rgba(255,204,47,0.18)";
+    });
+    card.addEventListener("mouseleave", () => {
+      card.style.transform = "none";
+      card.style.borderColor = THEME.line;
+      card.style.boxShadow = "0 10px 30px rgba(0,0,0,0.45)";
+    });
     card.addEventListener("click", onClick);
   }
   modeRow.appendChild(card);
+}
+
+// ----- Map select screen (shown after you pick a mode) -----
+let pendingMode = "bots";
+let selectedMap = "football";
+const MODE_NAMES = { bots: "FIGHT BOTS", online: "PLAY ONLINE", private: "PRIVATE ROOM" };
+
+const mapOverlay = document.createElement("div");
+mapOverlay.style.cssText = MENU_STYLE;
+mapOverlay.style.display = "none";
+mapOverlay.innerHTML = '<h1 style="margin:0 0 8px;font-size:40px;">CHOOSE A MAP</h1>';
+const mapSub = document.createElement("div");
+mapSub.style.cssText = "margin-bottom:28px;font-size:13px;letter-spacing:4px;opacity:0.6;";
+mapOverlay.appendChild(mapSub);
+const mapRow = document.createElement("div");
+mapRow.style.cssText = "display:flex;gap:22px;flex-wrap:wrap;justify-content:center;";
+mapOverlay.appendChild(mapRow);
+
+function makeMapCard(name, previewCss, tag, enabled, onClick) {
+  const card = document.createElement("div");
+  card.style.cssText =
+    "width:270px;border:2px solid " + THEME.line + ";border-radius:16px;overflow:hidden;background:#0f1530;box-shadow:0 10px 30px rgba(0,0,0,0.45);transition:transform .15s,border-color .15s,box-shadow .15s;" +
+    (enabled ? "cursor:pointer;" : "opacity:0.45;");
+  const prev = document.createElement("div");
+  prev.style.cssText = "height:150px;position:relative;" + previewCss;
+  if (!enabled) {
+    prev.innerHTML =
+      '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;"><svg viewBox="0 0 24 24" width="44" height="44" fill="none" stroke="#9aa6d6" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg></div>';
+  }
+  const info = document.createElement("div");
+  info.style.cssText = "padding:14px 16px;display:flex;justify-content:space-between;align-items:center;";
+  info.innerHTML =
+    '<div style="font-size:18px;font-weight:800;letter-spacing:1px;">' + name + "</div>" +
+    '<div style="font-size:11px;font-weight:bold;letter-spacing:2px;padding:4px 8px;border-radius:6px;background:' +
+    (enabled ? "#1f7a45" : "#2a3763") + ';">' + tag + "</div>";
+  card.appendChild(prev);
+  card.appendChild(info);
+  if (enabled) {
+    card.addEventListener("mouseenter", () => {
+      card.style.transform = "translateY(-8px)";
+      card.style.borderColor = THEME.gold;
+      card.style.boxShadow = "0 16px 40px rgba(255,204,47,0.18)";
+    });
+    card.addEventListener("mouseleave", () => {
+      card.style.transform = "none";
+      card.style.borderColor = THEME.line;
+      card.style.boxShadow = "0 10px 30px rgba(0,0,0,0.45)";
+    });
+    card.addEventListener("click", onClick);
+  }
+  mapRow.appendChild(card);
+}
+makeMapCard(
+  "FOOTBALL FIELD",
+  "background:radial-gradient(circle at 50% 50%,rgba(255,255,255,0.55) 0 13px,transparent 14px),linear-gradient(90deg,#c62828 0 12%,transparent 12% 88%,#c62828 88% 100%),repeating-linear-gradient(90deg,#2e8b3d 0 9%,#379a47 9% 18%);",
+  "AVAILABLE",
+  true,
+  () => {
+    selectedMap = "football";
+    proceedFromMap();
+  }
+);
+const SOON_BG = "background:linear-gradient(135deg,#1a2244,#0c1124);";
+makeMapCard("MAIN HALLWAY", SOON_BG, "COMING SOON", false);
+makeMapCard("GYMNASIUM", SOON_BG, "COMING SOON", false);
+
+const mapBack = document.createElement("div");
+mapBack.textContent = "< Back";
+mapBack.style.cssText = "margin-top:30px;font-size:16px;cursor:pointer;text-decoration:underline;opacity:0.8;";
+mapBack.addEventListener("click", () => {
+  mapOverlay.style.display = "none";
+  modeOverlay.style.display = "flex";
+});
+mapOverlay.appendChild(mapBack);
+document.body.appendChild(mapOverlay);
+
+// Home -> map screen
+function chooseMode(kind) {
+  if (!commitName()) return;
+  pendingMode = kind;
+  mapSub.textContent = MODE_NAMES[kind] + "  |  PLAYING AS " + myName.toUpperCase();
+  modeOverlay.style.display = "none";
+  mapOverlay.style.display = "flex";
+}
+// Map screen -> the chosen mode
+function proceedFromMap() {
+  mapOverlay.style.display = "none";
+  if (pendingMode === "bots") startBotMode();
+  else if (pendingMode === "online") startOnline({ room: "PUBLIC" });
+  else {
+    privMsg.textContent = "";
+    privateOverlay.style.display = "flex";
+  }
 }
 
 // ----- Private room screen -----
@@ -934,8 +1199,8 @@ privateOverlay.innerHTML = '<h1 style="margin:0 0 26px;font-size:42px;">PRIVATE 
 const createBtn = document.createElement("div");
 createBtn.textContent = "CREATE A NEW ROOM";
 createBtn.style.cssText = BTN_STYLE;
-createBtn.addEventListener("mouseenter", () => (createBtn.style.background = "#444"));
-createBtn.addEventListener("mouseleave", () => (createBtn.style.background = "#222"));
+createBtn.addEventListener("mouseenter", () => (createBtn.style.background = "#2a3a73"));
+createBtn.addEventListener("mouseleave", () => (createBtn.style.background = "#18213f"));
 createBtn.addEventListener("click", () => startOnline({ create: true }));
 
 const orText = document.createElement("div");
@@ -956,8 +1221,8 @@ codeInput.addEventListener("input", () => {
 const joinBtn = document.createElement("div");
 joinBtn.textContent = "JOIN";
 joinBtn.style.cssText = BTN_STYLE;
-joinBtn.addEventListener("mouseenter", () => (joinBtn.style.background = "#444"));
-joinBtn.addEventListener("mouseleave", () => (joinBtn.style.background = "#222"));
+joinBtn.addEventListener("mouseenter", () => (joinBtn.style.background = "#2a3a73"));
+joinBtn.addEventListener("mouseleave", () => (joinBtn.style.background = "#18213f"));
 joinBtn.addEventListener("click", () => {
   if (codeInput.value.length !== 4) {
     privMsg.textContent = "Type the 4-letter room code first.";
@@ -966,8 +1231,10 @@ joinBtn.addEventListener("click", () => {
   startOnline({ room: codeInput.value });
 });
 codeInput.addEventListener("keydown", (e) => {
+  e.stopPropagation();
   if (e.key === "Enter") joinBtn.click();
 });
+codeInput.addEventListener("keyup", (e) => e.stopPropagation());
 joinRow.appendChild(codeInput);
 joinRow.appendChild(joinBtn);
 
@@ -976,12 +1243,12 @@ privMsg.style.cssText =
   "margin-top:20px;font-size:16px;color:#ff6b6b;min-height:20px;text-align:center;max-width:600px;";
 
 const privBack = document.createElement("div");
-privBack.textContent = "< Back to modes";
+privBack.textContent = "< Back";
 privBack.style.cssText =
   "margin-top:20px;font-size:16px;cursor:pointer;text-decoration:underline;opacity:0.8;";
 privBack.addEventListener("click", () => {
   privateOverlay.style.display = "none";
-  modeOverlay.style.display = "flex";
+  mapOverlay.style.display = "flex";
 });
 
 privateOverlay.appendChild(createBtn);
@@ -1025,8 +1292,8 @@ function makeMenuBtn(text, onClick) {
   const b = document.createElement("div");
   b.textContent = text;
   b.style.cssText = BTN_STYLE + "width:260px;text-align:center;margin-bottom:14px;";
-  b.addEventListener("mouseenter", () => (b.style.background = "#444"));
-  b.addEventListener("mouseleave", () => (b.style.background = "#222"));
+  b.addEventListener("mouseenter", () => (b.style.background = "#2a3a73"));
+  b.addEventListener("mouseleave", () => (b.style.background = "#18213f"));
   b.addEventListener("click", onClick);
   pauseOverlay.appendChild(b);
   return b;
@@ -1069,9 +1336,9 @@ const overlay = document.createElement("div");
 overlay.style.cssText = MENU_STYLE;
 overlay.style.display = "none";
 overlay.innerHTML =
-  '<h1 style="margin:0 0 30px;font-size:42px;">CHOOSE YOUR TEACHER</h1>';
+  '<h1 style="margin:0 0 28px;font-size:40px;">CHOOSE YOUR TEACHER</h1>';
 const cardRow = document.createElement("div");
-cardRow.style.cssText = "display:flex;gap:20px;";
+cardRow.style.cssText = "display:flex;gap:22px;flex-wrap:wrap;justify-content:center;";
 overlay.appendChild(cardRow);
 
 const backBtn = document.createElement("div");
@@ -1093,46 +1360,32 @@ function showTeacherScreen() {
   overlay.style.display = "flex";
 }
 
-function makeCard(html, locked) {
+function makeCard(locked) {
   const card = document.createElement("div");
   card.style.cssText =
-    "width:240px;padding:20px;border:3px solid " +
-    (locked ? "#555" : "#fff") +
-    ";border-radius:10px;background:#222;text-align:center;" +
-    (locked ? "opacity:0.4;" : "cursor:pointer;");
-  card.innerHTML = html;
+    "position:relative;width:210px;height:310px;border-radius:16px;overflow:hidden;border:2px solid " +
+    (locked ? THEME.line : "#4a5da8") +
+    ";background:linear-gradient(180deg,#1b2548,#0c1124);display:flex;flex-direction:column;box-shadow:0 10px 30px rgba(0,0,0,0.45);" +
+    (locked ? "opacity:0.45;" : "cursor:pointer;transition:transform .15s,border-color .15s,box-shadow .15s;");
   cardRow.appendChild(card);
   return card;
 }
 
 for (const key in characters) {
   const c = characters[key];
-  const card = makeCard(
-    '<div style="font-size:24px;font-weight:bold;margin-bottom:10px;">' + c.name + "</div>" +
-      '<div style="font-size:14px;line-height:22px;text-align:left;">' +
-      (c.desc ? c.desc + '</div><div style="display:none;">' : "") +
-      "Health: " + c.health + "<br>" +
-      "Weapon: Phones (" + c.burst + " x " + c.damage + " dmg)<br>" +
-      "Q: Dash<br>" +
-      "E: Phone Grenade (" + c.grenadeDamage + " dmg)<br>" +
-      "Right Click: Logo Shield (" + Math.round(c.shieldBlock * 100) + "% block)<br>" +
-      "V: Ban Hammer (one shot, " + Math.round(c.meleeCooldown / 1000) + "s)<br>" +
-      "X: ULT - Balding (" + c.ultBeams + " x " + c.ultDamage + " dmg)" +
-      "</div>",
-    false
-  );
+  const hex = "#" + c.color.toString(16).padStart(6, "0");
+  const card = makeCard(false);
 
-  // Picture on top of the card (falls back to a colored box if the picture is missing)
+  // picture (falls back to a colored silhouette if the picture is missing)
   const holder = document.createElement("div");
   holder.style.cssText =
-    "height:140px;margin:0 auto 12px;display:flex;justify-content:center;align-items:center;";
+    "flex:1;display:flex;justify-content:center;align-items:flex-end;padding-top:14px;overflow:hidden;background:radial-gradient(circle at 50% 75%," + hex + "66,transparent 70%);";
   const fallback = document.createElement("div");
-  fallback.style.cssText =
-    "width:80px;height:120px;background:#" + c.color.toString(16).padStart(6, "0") + ";";
+  fallback.style.cssText = "width:96px;height:190px;border-radius:48px 48px 8px 8px;background:linear-gradient(180deg," + hex + ",#111);";
   holder.appendChild(fallback);
   if (c.picture) {
     const pic = document.createElement("img");
-    pic.style.cssText = "max-height:140px;max-width:100%;display:none;";
+    pic.style.cssText = "max-height:225px;max-width:100%;display:none;filter:drop-shadow(0 6px 10px rgba(0,0,0,0.6));";
     pic.onload = () => {
       pic.style.display = "block";
       fallback.style.display = "none";
@@ -1140,13 +1393,31 @@ for (const key in characters) {
     pic.src = c.picture;
     holder.appendChild(pic);
   }
-  card.prepend(holder);
+  card.appendChild(holder);
 
-  card.addEventListener("mouseenter", () => (card.style.background = "#444"));
-  card.addEventListener("mouseleave", () => (card.style.background = "#222"));
+  const nameBar = document.createElement("div");
+  nameBar.textContent = c.name;
+  nameBar.style.cssText =
+    "padding:13px 10px;text-align:center;font-size:19px;font-weight:800;letter-spacing:1.5px;background:rgba(0,0,0,0.5);border-top:3px solid " + hex + ";";
+  card.appendChild(nameBar);
+
+  card.addEventListener("mouseenter", () => {
+    card.style.transform = "translateY(-8px) scale(1.03)";
+    card.style.borderColor = THEME.gold;
+    card.style.boxShadow = "0 16px 40px " + hex + "55";
+  });
+  card.addEventListener("mouseleave", () => {
+    card.style.transform = "none";
+    card.style.borderColor = "#4a5da8";
+    card.style.boxShadow = "0 10px 30px rgba(0,0,0,0.45)";
+  });
   card.addEventListener("click", () => selectCharacter(key));
 }
-makeCard('<div style="font-size:24px;margin:80px 0;">Coming soon</div>', true);
+const soonCard = makeCard(true);
+soonCard.innerHTML =
+  '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;">' +
+  '<svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="#9aa6d6" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>' +
+  '<div style="font-size:13px;letter-spacing:3px;opacity:0.7;">COMING SOON</div></div>';
 
 // Bot mode: switching teachers counts as a respawn, so the last bot that hit you gets the kill
 function creditSwitchKill() {
@@ -1224,6 +1495,7 @@ function goToModes(msg) {
   overlay.style.display = "none";
   pauseOverlay.style.display = "none";
   privateOverlay.style.display = "none";
+  mapOverlay.style.display = "none";
   statusOverlay.style.display = "none";
   modeMsg.textContent = msg || "";
   modeOverlay.style.display = "flex";
@@ -1530,23 +1802,22 @@ makeModeCard(
   "FIGHT BOTS",
   BOT_COUNT + " bots roam the field. Everyone fights everyone, bots included.",
   true,
-  startBotMode
+  () => chooseMode("bots"),
+  MODE_ICONS.bots
 );
 makeModeCard(
   "PLAY ONLINE",
   "Everyone who joins fights on one map. Free for all.",
   true,
-  () => startOnline({ room: "PUBLIC" })
+  () => chooseMode("online"),
+  MODE_ICONS.online
 );
 makeModeCard(
   "PRIVATE ROOM",
   "Create a room and share the 4-letter code, or join a friend's room.",
   true,
-  () => {
-    privMsg.textContent = "";
-    modeOverlay.style.display = "none";
-    privateOverlay.style.display = "flex";
-  }
+  () => chooseMode("private"),
+  MODE_ICONS.private
 );
 
 // A target is either the player or a bot
