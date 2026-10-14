@@ -2,7 +2,7 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const SERVER_VERSION = 6; // the game warns players if this doesn't match game.js
+const SERVER_VERSION = 7; // the game warns players if this doesn't match game.js
 const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 12;
 const RESPAWN_MS = 3000;
@@ -95,11 +95,20 @@ function pickSpawn(room) {
   return best;
 }
 
+// basic bad-word filter for player names (the game checks too, this stops edited clients)
+const BAD_WORDS = ["fuck", "shit", "bitch", "cunt", "dick", "cock", "pussy", "nigg", "fagg", "slut", "whore", "rape", "nazi", "hitler", "porn", "penis", "vagina", "asshole", "bastard"];
+function nameLooksBad(n) {
+  const map = { 0: "o", 1: "i", 3: "e", 4: "a", 5: "s", 7: "t" };
+  const squashed = n.toLowerCase().replace(/[013457 ]/g, (c) => map[c] || "").replace(/[^a-z]/g, "");
+  return BAD_WORDS.some((w) => squashed.includes(w));
+}
+
 // ---------- joining and leaving ----------
 function join(p, m) {
   if (p.room) return;
   p.name =
-    String(m.name || "").replace(/[^A-Za-z0-9 ]/g, "").trim().slice(0, 20) || "Player" + p.id;
+    String(m.name || "").replace(/[^A-Za-z0-9 ]/g, "").replace(/\s+/g, " ").trim().slice(0, 16) || "Player" + p.id;
+  if (nameLooksBad(p.name)) p.name = "Player" + p.id;
 
   let room;
   if (m.create) {
