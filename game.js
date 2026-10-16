@@ -733,6 +733,13 @@ const statsHud = document.createElement("div");
 statsHud.style.cssText =
   "position:fixed;top:10px;left:16px;color:#fff;font:bold 16px sans-serif;text-shadow:1px 1px 2px #000;";
 document.body.appendChild(statsHud);
+
+// Watermark (in-game HUD: subtle)
+const hudWatermark = document.createElement("div");
+hudWatermark.textContent = "Created by @Anonjeffymous on IG";
+hudWatermark.style.cssText =
+  "position:fixed;right:16px;bottom:4px;z-index:3;pointer-events:none;font:600 11px/1.4 'Segoe UI',Arial,sans-serif;color:#fff;opacity:0.28;letter-spacing:0.5px;text-shadow:0 1px 2px #000;";
+document.body.appendChild(hudWatermark);
 function updateStats() {
   statsHud.textContent = "Kills: " + kills + "   Deaths: " + deaths;
 }
@@ -974,6 +981,13 @@ homeTitle.innerHTML =
   THEME.gold + ';">ARENA</span></div>' +
   '<div style="margin-top:8px;font-size:14px;letter-spacing:6px;opacity:0.65;">TEACHER SHOWDOWN</div>';
 modeOverlay.appendChild(homeTitle);
+
+const menuWatermark = document.createElement("div");
+menuWatermark.innerHTML =
+  'Created by <span style="color:' + THEME.gold + ';">@Anonjeffymous</span> on IG';
+menuWatermark.style.cssText =
+  "position:fixed;left:0;right:0;bottom:18px;text-align:center;font:700 15px/1.4 'Segoe UI',Arial,sans-serif;color:#fff;opacity:0.85;letter-spacing:1px;text-shadow:0 2px 6px rgba(0,0,0,0.6);pointer-events:none;";
+document.body.appendChild(menuWatermark);
 
 // --- name box ---
 const BAD_WORDS = ["fuck", "shit", "bitch", "cunt", "dick", "cock", "pussy", "nigg", "fagg", "slut", "whore", "rape", "nazi", "hitler", "porn", "penis", "vagina", "asshole", "bastard"];
@@ -2865,6 +2879,7 @@ function resetApples() {
   slowUntil = 0;
   lastBee = -99999;
   beeAnimStart = 0;
+  appleThrowAnim = 0;
   holdUntil = 0;
   if (beast) endBeast(true);
   clearMines();
