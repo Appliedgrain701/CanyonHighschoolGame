@@ -387,9 +387,9 @@ const characters = {
     health: 200,
     speed: 0.17,
     // Weapon: 6 hitscan apples (like Jett's knives)
-    fireDelay: 600, // ms between apples (0.6 seconds)
+    fireDelay: 450, // ms between apples
     apples: 6,
-    appleDamage: 40,
+    appleDamage: 50,
     reloadMs: 2000, // reload if you used all 6 without a kill (a kill refills instantly)
     // Right click: bee gun (hitscan, medium explosion, then a sticky yellow zone)
     beeCooldown: 8000,
@@ -413,7 +413,7 @@ const characters = {
     ultPerDamage: 0.07,
     ultPerKill: 8,
     desc:
-      "Health: 200<br>Weapon: 6 Apples (40 dmg each, hitscan)<br>No kill with all 6 = 2s reload<br>" +
+      "Health: 200<br>Weapon: 6 Apples (50 dmg each, hitscan)<br>No kill with all 6 = 2s reload<br>" +
       "A kill = instant refill<br>Right Click: Bee Gun (50 dmg blast + sticky zone)<br>E: Apple Landmine (75 dmg, 6s)<br>V: Beehive (50 dmg + slow)<br>X: ULT - Bee Beast (65 + 10/s + 65), press X again to recall",
   },
 };
@@ -429,7 +429,7 @@ const BEAM_HIT_RADIUS = 1.4;
 const BEAM_LIFE = 45; // frames a beam stays visible
 const PHONE_VIEW = { x: 0.38, y: -0.36, z: -0.8 }; // where the phone sits in first person
 const NET_RATE = 50; // ms between position updates sent online (20 per second)
-const SERVER_VERSION = 7; // must match server.js (used to warn you if the server is old)
+const SERVER_VERSION = 8; // must match server.js (used to warn you if the server is old)
 const LAST_HIT_WINDOW = 10000; // ms: switching teachers gives the kill to whoever hit you in this time
 
 // ----- BOT SETTINGS (change these to make bots easier or harder) -----
@@ -2856,14 +2856,21 @@ let appleAmmo = 6;
 let appleReload = 0; // 0 = not reloading, otherwise the time the reload ends
 let slowUntil = 0;
 
-// 6 apples circling her (third person)
+// 6 apples on a bandolier, 3 on each hip (third person; Jett's knives in Valorant were the reference)
 const orbitApples = [];
+const APPLE_SLOTS = [
+  [-0.42, 1.05, 0.22], [-0.42, 0.82, 0.24], [-0.42, 0.59, 0.22], // left hip, top to bottom
+  [0.42, 1.05, 0.22], [0.42, 0.82, 0.24], [0.42, 0.59, 0.22], // right hip, top to bottom
+];
 for (let i = 0; i < 6; i++) {
   const sp = new THREE.Sprite(appleSprMat);
   sp.visible = false;
+  sp.position.set(APPLE_SLOTS[i][0], APPLE_SLOTS[i][1], APPLE_SLOTS[i][2]);
   player.add(sp);
   orbitApples.push(sp);
 }
+let appleThrowAnimVal = 0; // 0..1, snaps to 1 on a throw and decays fast (the quick draw-and-flick)
+const throwFx = []; // little apple that snaps from the holster to the throw point (third person)
 
 // Beehive (melee)
 function makeHive() {
@@ -2901,7 +2908,7 @@ function resetApples() {
   slowUntil = 0;
   lastBee = -99999;
   beeAnimStart = 0;
-  appleThrowAnim = 0;
+  appleThrowAnimVal = 0;
   holdUntil = 0;
   if (beast) endBeast(true);
   clearMines();
@@ -2926,8 +2933,10 @@ function spawnAppleFx(from, to) {
 
 function fireApple() {
   const now = performance.now();
+  const thrownIdx = current.kind === "applebee" ? Math.max(0, Math.min(5, appleAmmo - 1)) : -1;
   appleAmmo--;
   viewKick = 1;
+  appleThrowAnimVal = 1; // quick Jett-style flick, in both 1st and 3rd person
   const eye = new THREE.Vector3(player.position.x, player.position.y + 0.7, player.position.z);
   const f = aimDirection(eye);
   let wall = 120;
@@ -2949,6 +2958,14 @@ function fireApple() {
   }
   const end = eye.clone().addScaledVector(f, bestT);
   const origin = eye.clone().addScaledVector(f, 0.8);
+  if (thrownIdx >= 0 && !isFirstPerson()) {
+    const holsterPos = orbitApples[thrownIdx].getWorldPosition(new THREE.Vector3());
+    const sp = new THREE.Sprite(appleSprMat);
+    sp.scale.set(0.42 * appleAspect, 0.42, 1);
+    sp.position.copy(holsterPos);
+    scene.add(sp);
+    throwFx.push({ sp, from: holsterPos, to: origin, t0: now, dur: 90 });
+  }
   spawnAppleFx(origin, end);
   netFx("a", [origin.x, origin.y, origin.z, end.x, end.y, end.z]);
   if (best) playAppleHit();
@@ -3433,10 +3450,25 @@ function updateApples(now) {
   const on = current.kind === "applebee" && !dead && !isFirstPerson();
   for (let i = 0; i < 6; i++) {
     const sp = orbitApples[i];
-    sp.visible = on && i < appleAmmo;
-    const a = now / 700 + (i * Math.PI * 2) / 6;
-    sp.position.set(Math.cos(a) * 1.3, 0.1 + Math.sin(now / 400 + i) * 0.1, Math.sin(a) * 1.3);
-    sp.scale.set(0.55 * appleAspect, 0.55, 1);
+    // apples are drawn from the bottom of each row first, like a holster emptying
+    const leftLeft = Math.max(0, Math.min(3, appleAmmo));
+    const rightLeft = Math.max(0, Math.min(3, appleAmmo - 3));
+    const visible = i < 3 ? i >= 3 - leftLeft : i >= 6 - rightLeft;
+    sp.visible = on && visible;
+    sp.position.y = APPLE_SLOTS[i][1] + Math.sin(now / 500 + i) * 0.012; // a light idle breathe
+    sp.scale.set(0.42 * appleAspect, 0.42, 1);
+  }
+  for (let i = throwFx.length - 1; i >= 0; i--) {
+    const fx = throwFx[i];
+    const t = (now - fx.t0) / fx.dur;
+    if (t >= 1) {
+      scene.remove(fx.sp);
+      throwFx.splice(i, 1);
+      continue;
+    }
+    const e = t * (2 - t); // quick ease-out snap
+    fx.sp.position.lerpVectors(fx.from, fx.to, e);
+    fx.sp.scale.setScalar(0.42 * (1 + e * 0.5));
   }
   for (let i = beeSwarm.length - 1; i >= 0; i--) {
     const sw = beeSwarm[i];
@@ -3926,15 +3958,22 @@ function animate() {
     shieldWorld.rotation.y = yaw;
   }
 
-  // Phone in his hand: recoil when shooting, arm swing when throwing
+  // Phone / apple in hand: Mahoney gets a recoil + toss, Applebee gets a sharp knife-style flick
   viewKick *= 0.8;
   throwAnim *= 0.88;
-  viewPhone.position.set(
-    PHONE_VIEW.x,
-    PHONE_VIEW.y + throwAnim * 0.25,
-    PHONE_VIEW.z + viewKick * 0.1 - throwAnim * 0.1
-  );
-  viewPhone.rotation.x = throwAnim * 0.9 + viewKick * 0.15;
+  appleThrowAnimVal *= 0.72;
+  if (current.kind === "applebee") {
+    const fk = appleThrowAnimVal;
+    viewPhone.position.set(PHONE_VIEW.x + fk * 0.1, PHONE_VIEW.y - fk * 0.05, PHONE_VIEW.z - fk * 0.3);
+    viewPhone.rotation.set(-fk * 0.7, fk * 0.35, -fk * 0.25);
+  } else {
+    viewPhone.position.set(
+      PHONE_VIEW.x,
+      PHONE_VIEW.y + throwAnim * 0.25,
+      PHONE_VIEW.z + viewKick * 0.1 - throwAnim * 0.1
+    );
+    viewPhone.rotation.set(throwAnim * 0.9 + viewKick * 0.15, 0, 0);
+  }
   viewPhoneImg.scale.set(0.34 * (current.kind === "applebee" ? appleAspect : phoneAspect), 0.34, 1);
 
   // Fade out the dash trail
