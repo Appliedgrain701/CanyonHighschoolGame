@@ -2875,13 +2875,13 @@ const throwFx = []; // little apple that snaps from the holster to the throw poi
 // Ms. Applebee's holster, seen from her own eyes: 3 apples low on each side of the screen
 const viewApples = [];
 const VIEW_APPLE_SLOTS = [
-  [-0.62, -0.46, -0.95], [-0.58, -0.6, -0.92], [-0.5, -0.73, -0.88],
-  [0.62, -0.46, -0.95], [0.58, -0.6, -0.92], [0.5, -0.73, -0.88],
+  [-0.56, -0.08, -0.82], [-0.46, -0.22, -0.8], [-0.38, -0.35, -0.78],
+  [0.56, -0.08, -0.82], [0.46, -0.22, -0.8], [0.38, -0.35, -0.78],
 ];
 for (let i = 0; i < 6; i++) {
   const sp = new THREE.Sprite(appleSprMat);
   sp.position.set(VIEW_APPLE_SLOTS[i][0], VIEW_APPLE_SLOTS[i][1], VIEW_APPLE_SLOTS[i][2]);
-  sp.scale.set(0.3, 0.3, 1);
+  sp.scale.set(0.38, 0.38, 1);
   sp.visible = false;
   viewRoot.add(sp);
   viewApples.push(sp);
@@ -2940,9 +2940,9 @@ function refillApples() {
 const appleFx = [];
 const appleTrailGeo = new THREE.SphereGeometry(0.1, 6, 6);
 function addAppleTrailPuff(pos) {
-  const m = new THREE.Mesh(appleTrailGeo, new THREE.MeshBasicMaterial({ color: 0xff2a2a, transparent: true, opacity: 0.85 }));
+  const m = new THREE.Mesh(appleTrailGeo, new THREE.MeshBasicMaterial({ color: 0xff2a2a, transparent: true, opacity: 0.95 }));
   m.position.copy(pos);
-  m.userData.life = 16;
+  m.userData.life = 22;
   scene.add(m);
   trails.push(m); // reuses the dash-trail fade-out loop already in animate()
 }
@@ -3503,6 +3503,7 @@ function updateApples(now) {
     fx.sp.position.y += Math.sin(t * Math.PI) * 0.35; // a little arc on the fling
     fx.sp.material.rotation = t * 10; // a fast spin as it leaves her hand
     fx.sp.scale.setScalar(0.42 * (1 + e * 0.5));
+    addAppleTrailPuff(fx.sp.position);
   }
   for (let i = beeSwarm.length - 1; i >= 0; i--) {
     const sw = beeSwarm[i];
