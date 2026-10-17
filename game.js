@@ -2870,7 +2870,8 @@ for (let i = 0; i < 5; i++) {
   player.add(sp);
   orbitApples.push(sp);
 }
-let appleThrowAnimVal = 0; // 0..1, snaps to 1 on a throw and decays fast (the quick draw-and-flick)
+let appleThrowAnimL = 0; // 0..1, snaps to 1 when a LEFT-side apple is thrown
+let appleThrowAnimR = 0; // 0..1, snaps to 1 when a RIGHT-side apple is thrown
 const throwFx = []; // little apple that snaps from the holster to the throw point (third person)
 
 // Ms. Applebee's holster, seen from her own eyes: 2 apples near each hand, 1 held between them
@@ -2903,6 +2904,7 @@ viewArmL.rotation.x = 0.3;
 viewPhoneL.add(viewArmL);
 viewPhoneL.position.set(-PHONE_VIEW.x, PHONE_VIEW.y, PHONE_VIEW.z);
 viewRoot.add(viewPhoneL);
+viewPhoneImgL.visible = false; // only the 5 holster apples should show, not one glued to each hand too
 
 // Beehive (melee)
 function makeHive() {
@@ -2940,7 +2942,8 @@ function resetApples() {
   slowUntil = 0;
   lastBee = -99999;
   beeAnimStart = 0;
-  appleThrowAnimVal = 0;
+  appleThrowAnimL = 0;
+  appleThrowAnimR = 0;
   holdUntil = 0;
   if (beast) endBeast(true);
   clearMines();
@@ -2977,7 +2980,10 @@ function fireApple() {
   const thrownIdx = current.kind === "applebee" ? Math.max(0, Math.min(4, appleAmmo - 1)) : -1;
   appleAmmo--;
   viewKick = 1;
-  appleThrowAnimVal = 1; // quick Jett-style flick, in both 1st and 3rd person
+  // slots 0-1 are the left-side apples, 2-3 are the right-side apples, 4 is the middle one (both hands)
+  if (thrownIdx === 4) { appleThrowAnimL = 1; appleThrowAnimR = 1; }
+  else if (thrownIdx === 0 || thrownIdx === 1) appleThrowAnimL = 1;
+  else if (thrownIdx === 2 || thrownIdx === 3) appleThrowAnimR = 1;
   const eye = new THREE.Vector3(player.position.x, player.position.y + 0.7, player.position.z);
   const f = aimDirection(eye);
   let wall = 120;
@@ -4013,17 +4019,19 @@ function animate() {
   // Phone / apple in hand: Mahoney gets a recoil + toss, Applebee gets a sharp knife-style flick
   viewKick *= 0.8;
   throwAnim *= 0.88;
-  appleThrowAnimVal *= 0.8;
+    appleThrowAnimL *= 0.8;
+  appleThrowAnimR *= 0.8;
   if (current.kind === "applebee") {
-    const fk = appleThrowAnimVal;
-    const snap = fk * fk; // sharp out, smooth back - the Jett-knife flick
-    // both hands guide the apple out together, like Jett's two-handed knife release
-    viewPhone.position.set(PHONE_VIEW.x + snap * 0.6, PHONE_VIEW.y + snap * 0.25, PHONE_VIEW.z - snap * 0.7);
-    viewPhone.rotation.set(-snap * 1.15, -snap * 0.95, snap * 0.55);
-    viewPhoneL.position.set(-PHONE_VIEW.x - snap * 0.6, PHONE_VIEW.y + snap * 0.25, PHONE_VIEW.z - snap * 0.7);
-    viewPhoneL.rotation.set(-snap * 1.15, snap * 0.95, -snap * 0.55);
-    viewPhoneImgL.scale.set(-0.34 * appleAspect, 0.34, 1); // negative x keeps the icon from drawing mirror-backwards
+    viewPhoneImg.visible = false; // no apple glued to her hand - just the 5 on the holster
+    const snapL = appleThrowAnimL * appleThrowAnimL; // sharp out, smooth back - the Jett-knife flick
+    const snapR = appleThrowAnimR * appleThrowAnimR;
+    // only the hand that matches the thrown apple's side moves (both for the middle apple)
+    viewPhone.position.set(PHONE_VIEW.x + snapR * 0.6, PHONE_VIEW.y + snapR * 0.25, PHONE_VIEW.z - snapR * 0.7);
+    viewPhone.rotation.set(-snapR * 1.15, -snapR * 0.95, snapR * 0.55);
+    viewPhoneL.position.set(-PHONE_VIEW.x - snapL * 0.6, PHONE_VIEW.y + snapL * 0.25, PHONE_VIEW.z - snapL * 0.7);
+    viewPhoneL.rotation.set(-snapL * 1.15, snapL * 0.95, -snapL * 0.55);
   } else {
+    viewPhoneImg.visible = true;
     viewPhone.position.set(
       PHONE_VIEW.x,
       PHONE_VIEW.y + throwAnim * 0.25,
