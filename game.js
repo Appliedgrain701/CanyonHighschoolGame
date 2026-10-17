@@ -508,8 +508,23 @@ let myName =
 // Asks the browser to capture the mouse (it can refuse right after Esc, so errors are ignored)
 function lockPointer() {
   try {
+    renderer.domElement.focus({ preventScroll: true });
+  } catch (e) {}
+  try {
     const r = renderer.domElement.requestPointerLock();
-    if (r && r.catch) r.catch(() => {});
+    if (r && r.catch) {
+      r.catch(() => {
+        // the first attempt can be refused right after a menu click chain; try once more shortly after
+        setTimeout(() => {
+          if (playing && !paused && !document.pointerLockElement) {
+            try {
+              const r2 = renderer.domElement.requestPointerLock();
+              if (r2 && r2.catch) r2.catch(() => {});
+            } catch (e) {}
+          }
+        }, 150);
+      });
+    }
   } catch (e) {}
 }
 
@@ -1485,6 +1500,7 @@ function selectCharacter(key) {
   paused = false;
   playing = true;
   inMatch = true;
+  justSelectedAt = performance.now();
   if (mode === "online" && net) {
     if (net.ready) {
       netSend({ t: "switch", char: key }); // the server respawns you and credits your last attacker
@@ -1662,12 +1678,18 @@ addEventListener("mouseup", (e) => {
   if (e.button === 0) mouseHeld = false;
 });
 addEventListener("contextmenu", (e) => e.preventDefault());
+let justSelectedAt = 0; // guards against a failed/slow pointer lock bouncing you into the pause menu
 document.addEventListener("pointerlockchange", () => {
   if (!document.pointerLockElement) {
     rightHeld = false;
     mouseHeld = false;
-    // the mouse got released (Esc was pressed): open the pause menu
-    if (playing && !paused && overlay.style.display === "none") showPause();
+    // the mouse got released (Esc was pressed): open the pause menu.
+    // Skip this for a moment right after picking a teacher, since some browsers
+    // fire this same event when the lock request itself just failed or is still
+    // settling, which would otherwise bounce you straight into the pause menu.
+    if (playing && !paused && overlay.style.display === "none" && performance.now() - justSelectedAt > 800) {
+      showPause();
+    }
   }
 });
 
@@ -2879,6 +2901,7 @@ function resetApples() {
   slowUntil = 0;
   lastBee = -99999;
   beeAnimStart = 0;
+  appleThrowAnim = 0;
   holdUntil = 0;
   if (beast) endBeast(true);
   clearMines();
