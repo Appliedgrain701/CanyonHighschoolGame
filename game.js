@@ -2872,6 +2872,21 @@ for (let i = 0; i < 6; i++) {
 let appleThrowAnimVal = 0; // 0..1, snaps to 1 on a throw and decays fast (the quick draw-and-flick)
 const throwFx = []; // little apple that snaps from the holster to the throw point (third person)
 
+// Ms. Applebee's holster, seen from her own eyes: 3 apples low on each side of the screen
+const viewApples = [];
+const VIEW_APPLE_SLOTS = [
+  [-0.62, -0.46, -0.95], [-0.58, -0.6, -0.92], [-0.5, -0.73, -0.88],
+  [0.62, -0.46, -0.95], [0.58, -0.6, -0.92], [0.5, -0.73, -0.88],
+];
+for (let i = 0; i < 6; i++) {
+  const sp = new THREE.Sprite(appleSprMat);
+  sp.position.set(VIEW_APPLE_SLOTS[i][0], VIEW_APPLE_SLOTS[i][1], VIEW_APPLE_SLOTS[i][2]);
+  sp.scale.set(0.3, 0.3, 1);
+  sp.visible = false;
+  viewRoot.add(sp);
+  viewApples.push(sp);
+}
+
 // Beehive (melee)
 function makeHive() {
   const g = new THREE.Group();
@@ -2923,12 +2938,20 @@ function refillApples() {
 
 // Apple flying to where the shot landed (the hit itself is instant)
 const appleFx = [];
+const appleTrailGeo = new THREE.SphereGeometry(0.1, 6, 6);
+function addAppleTrailPuff(pos) {
+  const m = new THREE.Mesh(appleTrailGeo, new THREE.MeshBasicMaterial({ color: 0xff2a2a, transparent: true, opacity: 0.85 }));
+  m.position.copy(pos);
+  m.userData.life = 16;
+  scene.add(m);
+  trails.push(m); // reuses the dash-trail fade-out loop already in animate()
+}
 function spawnAppleFx(from, to) {
   const sp = new THREE.Sprite(appleSprMat);
   sp.scale.set(0.6 * appleAspect, 0.6, 1);
   sp.position.copy(from);
   scene.add(sp);
-  appleFx.push({ sp, from, to, t0: performance.now() });
+  appleFx.push({ sp, from, to, t0: performance.now(), kind: "apple" });
 }
 
 function fireApple() {
@@ -2960,11 +2983,12 @@ function fireApple() {
   const origin = eye.clone().addScaledVector(f, 0.8);
   if (thrownIdx >= 0 && !isFirstPerson()) {
     const holsterPos = orbitApples[thrownIdx].getWorldPosition(new THREE.Vector3());
-    const sp = new THREE.Sprite(appleSprMat);
+    const flingMat = appleSprMat.clone();
+    const sp = new THREE.Sprite(flingMat);
     sp.scale.set(0.42 * appleAspect, 0.42, 1);
     sp.position.copy(holsterPos);
     scene.add(sp);
-    throwFx.push({ sp, from: holsterPos, to: origin, t0: now, dur: 90 });
+    throwFx.push({ sp, from: holsterPos, to: origin, t0: now, dur: 140 });
   }
   spawnAppleFx(origin, end);
   netFx("a", [origin.x, origin.y, origin.z, end.x, end.y, end.z]);
@@ -3074,7 +3098,7 @@ function spawnBeeFx(from, to) {
   core.scale.setScalar(1.3);
   core.position.copy(from);
   scene.add(core);
-  appleFx.push({ sp: core, from, to, t0: performance.now() });
+  appleFx.push({ sp: core, from, to, t0: performance.now(), kind: "bee" });
 }
 
 // ----- Bee gun model + animation (first person, third person, other players) -----
@@ -3447,27 +3471,37 @@ function updateApples(now) {
     appleAmmo = current.apples || 6;
     appleReload = 0;
   }
+  const leftLeft = Math.max(0, Math.min(3, appleAmmo));
+  const rightLeft = Math.max(0, Math.min(3, appleAmmo - 3));
   const on = current.kind === "applebee" && !dead && !isFirstPerson();
   for (let i = 0; i < 6; i++) {
     const sp = orbitApples[i];
     // apples are drawn from the bottom of each row first, like a holster emptying
-    const leftLeft = Math.max(0, Math.min(3, appleAmmo));
-    const rightLeft = Math.max(0, Math.min(3, appleAmmo - 3));
     const visible = i < 3 ? i >= 3 - leftLeft : i >= 6 - rightLeft;
     sp.visible = on && visible;
     sp.position.y = APPLE_SLOTS[i][1] + Math.sin(now / 500 + i) * 0.012; // a light idle breathe
     sp.scale.set(0.42 * appleAspect, 0.42, 1);
+  }
+  const fpOn = current.kind === "applebee" && !dead && isFirstPerson();
+  for (let i = 0; i < 6; i++) {
+    const sp = viewApples[i];
+    const visible = i < 3 ? i >= 3 - leftLeft : i >= 6 - rightLeft;
+    sp.visible = fpOn && visible;
+    sp.scale.set(0.3 * appleAspect, 0.3, 1);
   }
   for (let i = throwFx.length - 1; i >= 0; i--) {
     const fx = throwFx[i];
     const t = (now - fx.t0) / fx.dur;
     if (t >= 1) {
       scene.remove(fx.sp);
+      fx.sp.material.dispose();
       throwFx.splice(i, 1);
       continue;
     }
     const e = t * (2 - t); // quick ease-out snap
     fx.sp.position.lerpVectors(fx.from, fx.to, e);
+    fx.sp.position.y += Math.sin(t * Math.PI) * 0.35; // a little arc on the fling
+    fx.sp.material.rotation = t * 10; // a fast spin as it leaves her hand
     fx.sp.scale.setScalar(0.42 * (1 + e * 0.5));
   }
   for (let i = beeSwarm.length - 1; i >= 0; i--) {
@@ -3492,7 +3526,10 @@ function updateApples(now) {
     if (t >= 1) {
       scene.remove(f.sp);
       appleFx.splice(i, 1);
-    } else f.sp.position.lerpVectors(f.from, f.to, t);
+    } else {
+      f.sp.position.lerpVectors(f.from, f.to, t);
+      if (f.kind === "apple") addAppleTrailPuff(f.sp.position);
+    }
   }
 }
 
@@ -3961,11 +3998,12 @@ function animate() {
   // Phone / apple in hand: Mahoney gets a recoil + toss, Applebee gets a sharp knife-style flick
   viewKick *= 0.8;
   throwAnim *= 0.88;
-  appleThrowAnimVal *= 0.72;
+  appleThrowAnimVal *= 0.8;
   if (current.kind === "applebee") {
     const fk = appleThrowAnimVal;
-    viewPhone.position.set(PHONE_VIEW.x + fk * 0.1, PHONE_VIEW.y - fk * 0.05, PHONE_VIEW.z - fk * 0.3);
-    viewPhone.rotation.set(-fk * 0.7, fk * 0.35, -fk * 0.25);
+    const snap = fk * fk; // sharp out, smooth back - the Jett-knife flick
+    viewPhone.position.set(PHONE_VIEW.x + snap * 0.6, PHONE_VIEW.y + snap * 0.25, PHONE_VIEW.z - snap * 0.7);
+    viewPhone.rotation.set(-snap * 1.15, -snap * 0.95, snap * 0.55);
   } else {
     viewPhone.position.set(
       PHONE_VIEW.x,
