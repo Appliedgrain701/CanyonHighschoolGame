@@ -388,7 +388,7 @@ const characters = {
     speed: 0.17,
     // Weapon: 6 hitscan apples (like Jett's knives)
     fireDelay: 450, // ms between apples
-    apples: 6,
+    apples: 5,
     appleDamage: 50,
     reloadMs: 2000, // reload if you used all 6 without a kill (a kill refills instantly)
     // Right click: bee gun (hitscan, medium explosion, then a sticky yellow zone)
@@ -413,7 +413,7 @@ const characters = {
     ultPerDamage: 0.07,
     ultPerKill: 8,
     desc:
-      "Health: 200<br>Weapon: 6 Apples (50 dmg each, hitscan)<br>No kill with all 6 = 2s reload<br>" +
+      "Health: 200<br>Weapon: 5 Apples (50 dmg each, hitscan)<br>No kill with all 5 = 2s reload<br>" +
       "A kill = instant refill<br>Right Click: Bee Gun (50 dmg blast + sticky zone)<br>E: Apple Landmine (75 dmg, 6s)<br>V: Beehive (50 dmg + slow)<br>X: ULT - Bee Beast (65 + 10/s + 65), press X again to recall",
   },
 };
@@ -2852,17 +2852,18 @@ texLoader.load("apple.png", (t) => {
   appleMeshMat.map = t; appleMeshMat.needsUpdate = true;
 });
 
-let appleAmmo = 6;
+let appleAmmo = 5;
 let appleReload = 0; // 0 = not reloading, otherwise the time the reload ends
 let slowUntil = 0;
 
-// 6 apples on a bandolier, 3 on each hip (third person; Jett's knives in Valorant were the reference)
+// 5 apples, Jett-knife style: 2 on the outside of each arm, 1 held inside, close to her body
 const orbitApples = [];
 const APPLE_SLOTS = [
-  [-0.42, 1.05, 0.22], [-0.42, 0.82, 0.24], [-0.42, 0.59, 0.22], // left hip, top to bottom
-  [0.42, 1.05, 0.22], [0.42, 0.82, 0.24], [0.42, 0.59, 0.22], // right hip, top to bottom
+  [-0.5, 1.0, 0.2], [-0.4, 0.78, 0.22], // left arm, outside
+  [0.5, 1.0, 0.2], [0.4, 0.78, 0.22], // right arm, outside
+  [0, 0.95, 0.32], // inside, centered on her body
 ];
-for (let i = 0; i < 6; i++) {
+for (let i = 0; i < 5; i++) {
   const sp = new THREE.Sprite(appleSprMat);
   sp.visible = false;
   sp.position.set(APPLE_SLOTS[i][0], APPLE_SLOTS[i][1], APPLE_SLOTS[i][2]);
@@ -2872,13 +2873,14 @@ for (let i = 0; i < 6; i++) {
 let appleThrowAnimVal = 0; // 0..1, snaps to 1 on a throw and decays fast (the quick draw-and-flick)
 const throwFx = []; // little apple that snaps from the holster to the throw point (third person)
 
-// Ms. Applebee's holster, seen from her own eyes: 3 apples low on each side of the screen
+// Ms. Applebee's holster, seen from her own eyes: 2 apples near each hand, 1 held between them
 const viewApples = [];
 const VIEW_APPLE_SLOTS = [
-  [-0.56, -0.08, -0.82], [-0.46, -0.22, -0.8], [-0.38, -0.35, -0.78],
-  [0.56, -0.08, -0.82], [0.46, -0.22, -0.8], [0.38, -0.35, -0.78],
+  [-0.55, -0.1, -0.8], [-0.42, -0.25, -0.78],
+  [0.55, -0.1, -0.8], [0.42, -0.25, -0.78],
+  [0, -0.2, -0.7],
 ];
-for (let i = 0; i < 6; i++) {
+for (let i = 0; i < 5; i++) {
   const sp = new THREE.Sprite(appleSprMat);
   sp.position.set(VIEW_APPLE_SLOTS[i][0], VIEW_APPLE_SLOTS[i][1], VIEW_APPLE_SLOTS[i][2]);
   sp.scale.set(0.38, 0.38, 1);
@@ -2886,6 +2888,21 @@ for (let i = 0; i < 6; i++) {
   viewRoot.add(sp);
   viewApples.push(sp);
 }
+
+// Jett's ult shows both hands throwing - so does Ms. Applebee's. This is her off hand.
+const viewPhoneL = new THREE.Group();
+const viewPhoneImgL = new THREE.Mesh(phoneGeo, appleMeshMat);
+viewPhoneImgL.rotation.x = -0.9;
+viewPhoneL.add(viewPhoneImgL);
+const viewHandL = new THREE.Mesh(new THREE.SphereGeometry(0.07, 12, 12), skinMat);
+viewHandL.position.set(0, -0.07, 0.1);
+viewPhoneL.add(viewHandL);
+const viewArmL = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.8), sleeveMat);
+viewArmL.position.set(-0.05, -0.17, 0.5);
+viewArmL.rotation.x = 0.3;
+viewPhoneL.add(viewArmL);
+viewPhoneL.position.set(-PHONE_VIEW.x, PHONE_VIEW.y, PHONE_VIEW.z);
+viewRoot.add(viewPhoneL);
 
 // Beehive (melee)
 function makeHive() {
@@ -2918,7 +2935,7 @@ hiveFP.position.set(0.35, -0.5, -0.7);
 viewRoot.add(hiveFP);
 
 function resetApples() {
-  appleAmmo = current.apples || 6;
+  appleAmmo = current.apples || 5;
   appleReload = 0;
   slowUntil = 0;
   lastBee = -99999;
@@ -2938,10 +2955,11 @@ function refillApples() {
 
 // Apple flying to where the shot landed (the hit itself is instant)
 const appleFx = [];
-const appleTrailGeo = new THREE.SphereGeometry(0.1, 6, 6);
-function addAppleTrailPuff(pos) {
+const appleTrailGeo = new THREE.BoxGeometry(0.05, 0.05, 0.6); // thin + long, so it reads as a contrail, not a puff
+function addAppleTrailPuff(pos, dir) {
   const m = new THREE.Mesh(appleTrailGeo, new THREE.MeshBasicMaterial({ color: 0xff2a2a, transparent: true, opacity: 0.95 }));
   m.position.copy(pos);
+  if (dir && dir.lengthSq() > 0.0001) m.lookAt(pos.clone().add(dir));
   m.userData.life = 22;
   scene.add(m);
   trails.push(m); // reuses the dash-trail fade-out loop already in animate()
@@ -2956,7 +2974,7 @@ function spawnAppleFx(from, to) {
 
 function fireApple() {
   const now = performance.now();
-  const thrownIdx = current.kind === "applebee" ? Math.max(0, Math.min(5, appleAmmo - 1)) : -1;
+  const thrownIdx = current.kind === "applebee" ? Math.max(0, Math.min(4, appleAmmo - 1)) : -1;
   appleAmmo--;
   viewKick = 1;
   appleThrowAnimVal = 1; // quick Jett-style flick, in both 1st and 3rd person
@@ -3468,26 +3486,21 @@ function updateBeast(dt, now) {
 // Per-frame: reload timer, circling apples, flying apple pictures
 function updateApples(now) {
   if (appleReload > 0 && now >= appleReload) {
-    appleAmmo = current.apples || 6;
+    appleAmmo = current.apples || 5;
     appleReload = 0;
   }
-  const leftLeft = Math.max(0, Math.min(3, appleAmmo));
-  const rightLeft = Math.max(0, Math.min(3, appleAmmo - 3));
   const on = current.kind === "applebee" && !dead && !isFirstPerson();
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 5; i++) {
     const sp = orbitApples[i];
-    // apples are drawn from the bottom of each row first, like a holster emptying
-    const visible = i < 3 ? i >= 3 - leftLeft : i >= 6 - rightLeft;
-    sp.visible = on && visible;
+    sp.visible = on && i < appleAmmo; // holster empties in slot order as she throws
     sp.position.y = APPLE_SLOTS[i][1] + Math.sin(now / 500 + i) * 0.012; // a light idle breathe
     sp.scale.set(0.42 * appleAspect, 0.42, 1);
   }
   const fpOn = current.kind === "applebee" && !dead && isFirstPerson();
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 5; i++) {
     const sp = viewApples[i];
-    const visible = i < 3 ? i >= 3 - leftLeft : i >= 6 - rightLeft;
-    sp.visible = fpOn && visible;
-    sp.scale.set(0.3 * appleAspect, 0.3, 1);
+    sp.visible = fpOn && i < appleAmmo;
+    sp.scale.set(0.38 * appleAspect, 0.38, 1);
   }
   for (let i = throwFx.length - 1; i >= 0; i--) {
     const fx = throwFx[i];
@@ -3503,7 +3516,7 @@ function updateApples(now) {
     fx.sp.position.y += Math.sin(t * Math.PI) * 0.35; // a little arc on the fling
     fx.sp.material.rotation = t * 10; // a fast spin as it leaves her hand
     fx.sp.scale.setScalar(0.42 * (1 + e * 0.5));
-    addAppleTrailPuff(fx.sp.position);
+    addAppleTrailPuff(fx.sp.position, new THREE.Vector3().subVectors(fx.to, fx.from));
   }
   for (let i = beeSwarm.length - 1; i >= 0; i--) {
     const sw = beeSwarm[i];
@@ -3529,7 +3542,7 @@ function updateApples(now) {
       appleFx.splice(i, 1);
     } else {
       f.sp.position.lerpVectors(f.from, f.to, t);
-      if (f.kind === "apple") addAppleTrailPuff(f.sp.position);
+      if (f.kind === "apple") addAppleTrailPuff(f.sp.position, new THREE.Vector3().subVectors(f.to, f.from));
     }
   }
 }
@@ -3984,6 +3997,7 @@ function animate() {
   const fp = isFirstPerson();
   viewRoot.visible = playing && !dead && fp;
   viewPhone.visible = ultPhase === 0 && !swinging && !(beeP < 1);
+  viewPhoneL.visible = viewPhone.visible && current.kind === "applebee";
   shieldFP.visible = shieldUp;
   shieldWorld.visible = shieldUp && !fp;
   shieldDiscMat.opacity = 0.3 + 0.08 * Math.sin(now / 120);
@@ -4003,8 +4017,12 @@ function animate() {
   if (current.kind === "applebee") {
     const fk = appleThrowAnimVal;
     const snap = fk * fk; // sharp out, smooth back - the Jett-knife flick
+    // both hands guide the apple out together, like Jett's two-handed knife release
     viewPhone.position.set(PHONE_VIEW.x + snap * 0.6, PHONE_VIEW.y + snap * 0.25, PHONE_VIEW.z - snap * 0.7);
     viewPhone.rotation.set(-snap * 1.15, -snap * 0.95, snap * 0.55);
+    viewPhoneL.position.set(-PHONE_VIEW.x - snap * 0.6, PHONE_VIEW.y + snap * 0.25, PHONE_VIEW.z - snap * 0.7);
+    viewPhoneL.rotation.set(-snap * 1.15, snap * 0.95, -snap * 0.55);
+    viewPhoneImgL.scale.set(-0.34 * appleAspect, 0.34, 1); // negative x keeps the icon from drawing mirror-backwards
   } else {
     viewPhone.position.set(
       PHONE_VIEW.x,
