@@ -2901,6 +2901,7 @@ function resetApples() {
   slowUntil = 0;
   lastBee = -99999;
   beeAnimStart = 0;
+  appleThrowAnim = 0;
   holdUntil = 0;
   if (beast) endBeast(true);
   clearMines();
