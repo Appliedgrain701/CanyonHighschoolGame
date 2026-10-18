@@ -4,7 +4,7 @@ const { WebSocketServer } = require("ws");
 
 const SERVER_VERSION = 8; // the game warns players if this doesn't match game.js
 const PORT = process.env.PORT || 3000;
-const MAX_PLAYERS = 100;
+const MAX_PLAYERS = 12;
 const RESPAWN_MS = 3000;
 const CHARS = { mahoney: { health: 275 }, applebee: { health: 200 } };
 
@@ -332,7 +332,18 @@ wss.on("connection", (ws) => {
   };
   ws.isAlive = true;
   ws.on("pong", () => (ws.isAlive = true));
-  ws.on("message", (raw) => {
+  ws.on("message", (raw, isBinary) => {
+    if (isBinary) {
+      // voice chat: a raw 16kHz mono PCM chunk from push-to-talk, relayed to everyone else in the room
+      if (raw.length > 4000 || !p.room || !p.ready) return;
+      const packet = Buffer.allocUnsafe(4 + raw.length);
+      packet.writeUInt32LE(p.id, 0);
+      raw.copy(packet, 4);
+      for (const o of p.room.players.values()) {
+        if (o.id !== p.id && o.ws.readyState === 1) o.ws.send(packet);
+      }
+      return;
+    }
     if (raw.length > 2000) return;
     let m;
     try {
