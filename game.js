@@ -811,6 +811,13 @@ const crosshair = document.createElement("div");
 crosshair.style.cssText = CROSS_NORMAL;
 document.body.appendChild(crosshair);
 
+const beastRecallHint = document.createElement("div");
+beastRecallHint.textContent = "X: Recall the Bee Beast";
+beastRecallHint.style.cssText =
+  "position:fixed;top:calc(50% + 34px);left:50%;transform:translateX(-50%);font:bold 13px sans-serif;" +
+  "color:#ffd54a;text-shadow:0 2px 4px #000;white-space:nowrap;display:none;z-index:6;";
+document.body.appendChild(beastRecallHint);
+
 const deathMsg = document.createElement("div");
 deathMsg.textContent = "YOU DIED - respawning...";
 deathMsg.style.cssText =
@@ -1623,7 +1630,10 @@ addEventListener("keydown", (e) => {
   if (e.code === "Backquote" && !e.repeat && playing) startVoice();
 
   if (!playing || dead || paused || ultPhase !== 0 || e.repeat || performance.now() < holdUntil) return;
-  if (e.code === "KeyQ" && current.kind !== "applebee") dash();
+  if (e.code === "KeyQ") {
+    if (current.kind !== "applebee") dash();
+    else useHoney();
+  }
   if (e.code === "KeyE") throwGrenade();
   if (e.code === "KeyV") melee();
   if (e.code === "KeyX") startUlt();
@@ -1664,6 +1674,11 @@ addEventListener("mousemove", (e) => {
 // Left click = shoot (or fire a beam during the ult), right click (hold) = shield
 addEventListener("mousedown", (e) => {
   if (!playing || dead || paused || !document.pointerLockElement) return;
+  if (current.kind === "applebee" && honeyChoiceUntil > performance.now()) {
+    if (e.button === 0) resolveHoney("apple");
+    else if (e.button === 2) resolveHoney("bee");
+    return;
+  }
   if (e.button === 2) {
     if (current.kind === "applebee") {
       fireBeeGun();
@@ -3028,6 +3043,11 @@ function resetApples() {
   appleThrowAnimL = 0;
   appleThrowAnimR = 0;
   holdUntil = 0;
+  lastHoney = -99999;
+  honeyChoiceUntil = 0;
+  honeyHealTicksLeft = 0;
+  honeyBoostUntil = 0;
+  honeyChoice.style.display = "none";
   if (beast) endBeast(true);
   clearMines();
   clearZones();
@@ -3494,12 +3514,16 @@ function updateBeast(dt, now) {
       remoteBeasts.delete(id);
     }
   }
-  if (!beast) return;
+  if (!beast) {
+    beastRecallHint.style.display = "none";
+    return;
+  }
   if (dead || !playing) {
     endBeast(true);
     return;
   }
   const b = beast;
+  beastRecallHint.style.display = b.phase === "out" ? "block" : "none";
   flapWings(b.mesh, now);
 
   if (b.phase === "out") {
@@ -3582,6 +3606,16 @@ function updateApples(now) {
     appleAmmo = current.apples || 5;
     appleReload = 0;
   }
+  if (honeyChoiceUntil && now > honeyChoiceUntil) {
+    honeyChoiceUntil = 0;
+    honeyChoice.style.display = "none";
+  }
+  if (honeyHealTicksLeft > 0 && now >= nextHoneyHealAt) {
+    netSend({ t: "honey", k: "heal", amt: HONEY.healOverTime / HONEY.healTicks });
+    honeyHealTicksLeft--;
+    nextHoneyHealAt = now + HONEY.tickMs;
+  }
+  boostFx.style.opacity = honeyBoostUntil > now ? "1" : "0";
   const on = current.kind === "applebee" && !dead && !isFirstPerson();
   for (let i = 0; i < 5; i++) {
     const sp = orbitApples[i];
@@ -3792,6 +3826,7 @@ const ICON = {
   mine: '<circle cx="12" cy="13" r="4.5"/><path d="M12 3v3M12 20v3M3 13h3M18 13h3M6 7l2 2M16 17l2 2M18 7l-2 2M8 17l-2 2"/>',
   hive: '<ellipse cx="12" cy="7" rx="4" ry="2.5"/><ellipse cx="12" cy="12" rx="6" ry="3"/><ellipse cx="12" cy="17.5" rx="5" ry="3"/>',
   bee: '<ellipse cx="12" cy="14" rx="5" ry="6"/><path d="M7 6c-3-3-5 2-2 4M17 6c3-3 5 2 2 4M9 11h6M9 15h6"/>',
+  honey: '<path d="M12 3l7 9-7 9-7-9z"/><path d="M12 3v18"/>',
   sun: '<circle cx="12" cy="12" r="5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
   camera: '<path d="M3 8h4l2-3h6l2 3h4v11H3z"/><circle cx="12" cy="13" r="3.5"/>',
   wheel: '<rect x="7" y="2" width="10" height="20" rx="5"/><path d="M12 6v4"/>',
@@ -3805,6 +3840,7 @@ function abilityDefs() {
       tiles: [
         { key: "LMB", name: "Apples", icon: ICON.apple, badge: () => String(appleAmmo), reload: true },
         { key: "RMB", name: "Bee Gun", icon: ICON.beegun, cd: () => [lastBee, current.beeCooldown] },
+        { key: "Q", name: "Honey Choice", icon: ICON.honey, cd: () => [lastHoney, HONEY.cooldown] },
         { key: "E", name: "Landmine", icon: ICON.mine, cd: () => [lastGrenade, current.grenadeCooldown], badge: () => mines.length + "/" + current.maxMines },
         { key: "V", name: "Beehive", icon: ICON.hive },
       ],
@@ -3823,6 +3859,79 @@ function abilityDefs() {
     ultIcon: ICON.sun,
   };
 }
+
+// ----- Ms. Applebee: Q (Honey Choice) - heal over time, or a 20% damage boost -----
+const HONEY = {
+  cooldown: 15000, // the ability's cooldown, from the moment Q is pressed
+  chooseMs: 3000, // the prompt closes itself if she never clicks
+  healNow: 20, // instant heal if she picks the apple
+  healOverTime: 30, // spread across the ticks below - 3/s for 10s
+  healTicks: 10,
+  tickMs: 1000,
+  boostPct: 0.2, // +20% damage if she picks the bees
+  boostMs: 5000,
+};
+let lastHoney = -99999;
+let honeyChoiceUntil = 0; // while > now, the apple/bees prompt is up, waiting on a click
+let honeyHealTicksLeft = 0;
+let nextHoneyHealAt = 0;
+let honeyBoostUntil = 0; // while > now, her damage is boosted
+
+function useHoney() {
+  const now = performance.now();
+  if (now - lastHoney < HONEY.cooldown || honeyChoiceUntil > now) return;
+  lastHoney = now;
+  honeyChoiceUntil = now + HONEY.chooseMs;
+  honeyChoice.style.display = "block";
+}
+
+function resolveHoney(pick) {
+  honeyChoiceUntil = 0;
+  honeyChoice.style.display = "none";
+  if (pick === "apple") {
+    netSend({ t: "honey", k: "heal", amt: HONEY.healNow });
+    honeyHealTicksLeft = HONEY.healTicks;
+    nextHoneyHealAt = performance.now() + HONEY.tickMs;
+  } else {
+    netSend({ t: "honey", k: "boost" });
+    honeyBoostUntil = performance.now() + HONEY.boostMs;
+  }
+}
+
+// The prompt itself: an apple over her left hand, the bees over her right
+const honeyChoice = document.createElement("div");
+honeyChoice.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:6;display:none;";
+honeyChoice.innerHTML =
+  '<div style="position:absolute;left:10%;bottom:16%;width:110px;height:110px;border-radius:50%;' +
+  'background:radial-gradient(circle,rgba(255,204,47,.3),transparent 70%);border:2px solid #ffcc2f;' +
+  'display:flex;align-items:center;justify-content:center;">' + svgIcon(ICON.apple, 60) + "</div>" +
+  '<div style="position:absolute;right:10%;bottom:16%;width:110px;height:110px;border-radius:50%;' +
+  'background:radial-gradient(circle,rgba(255,204,47,.3),transparent 70%);border:2px solid #ffcc2f;' +
+  'display:flex;align-items:center;justify-content:center;">' + svgIcon(ICON.bee, 60) + "</div>" +
+  '<div style="position:absolute;left:50%;bottom:30%;transform:translateX(-50%);white-space:nowrap;' +
+  'font:bold 14px sans-serif;color:#fff;text-shadow:0 2px 4px #000;">LEFT CLICK: Heal &nbsp;&nbsp; RIGHT CLICK: Damage Boost</div>';
+document.body.appendChild(honeyChoice);
+
+// The damage-boost screen effect: arrows pulsing in from every edge of the screen
+const honeyStyle = document.createElement("style");
+honeyStyle.textContent = "@keyframes honeyPulse { 0%,100% { opacity: .5; } 50% { opacity: 1; } }";
+document.head.appendChild(honeyStyle);
+const boostFx = document.createElement("div");
+boostFx.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:5;opacity:0;transition:opacity .2s;";
+const HONEY_ARROWS = [
+  [50, 4, 180], [50, 96, 0], [4, 50, 90], [96, 50, -90],
+  [15, 15, 135], [85, 15, -135], [15, 85, 45], [85, 85, -45],
+];
+for (const [x, y, rot] of HONEY_ARROWS) {
+  const ar = document.createElement("div");
+  ar.style.cssText =
+    "position:absolute;left:" + x + "%;top:" + y + "%;width:0;height:0;" +
+    "border-left:13px solid transparent;border-right:13px solid transparent;border-bottom:20px solid #ffcc2f;" +
+    "filter:drop-shadow(0 0 6px #ffcc2f);transform:translate(-50%,-50%) rotate(" + rot + "deg);" +
+    "animation:honeyPulse .6s ease-in-out infinite;";
+  boostFx.appendChild(ar);
+}
+document.body.appendChild(boostFx);
 
 const abBar = document.createElement("div");
 abBar.style.cssText =
