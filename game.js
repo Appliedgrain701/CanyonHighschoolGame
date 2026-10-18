@@ -2987,7 +2987,6 @@ function fireApple() {
   if (thrownIdx === 4) { appleThrowAnimL = 1; appleThrowAnimR = 1; }
   else if (thrownIdx === 0 || thrownIdx === 1) appleThrowAnimL = 1;
   else if (thrownIdx === 2 || thrownIdx === 3) appleThrowAnimR = 1;
-  playAppleWoosh();
   const eye = new THREE.Vector3(player.position.x, player.position.y + 0.7, player.position.z);
   const f = aimDirection(eye);
   let wall = 120;
@@ -3024,6 +3023,7 @@ function fireApple() {
   if (best && best.bot) damageBot(best.bot, current.appleDamage, "apple", "player");
   else if (best && best.r) netSend({ t: "hit", target: best.r.id, k: "apple" });
   if (appleAmmo <= 0 && appleReload === 0) appleReload = now + current.reloadMs;
+  try { playAppleWhoosh(); } catch (e) {} // a sound glitch should never be able to block damage or reload
 }
 
 // Landmines
@@ -3499,19 +3499,18 @@ function updateApples(now) {
     appleAmmo = current.apples || 5;
     appleReload = 0;
   }
-    const on = current.kind === "applebee" && !dead && !isFirstPerson();
+  const on = current.kind === "applebee" && !dead && !isFirstPerson();
   for (let i = 0; i < 5; i++) {
     const sp = orbitApples[i];
     sp.visible = on && i < appleAmmo; // holster empties in slot order as she throws
     sp.position.y = APPLE_SLOTS[i][1] + Math.sin(now / 500 + i) * 0.012; // a light idle breathe
-    sp.material.rotation = now / 700 + i * 1.3; // the slow spin, like the apples originally had - third person only
     sp.scale.set(0.42 * appleAspect, 0.42, 1);
   }
   const fpOn = current.kind === "applebee" && !dead && isFirstPerson();
   for (let i = 0; i < 5; i++) {
     const sp = viewApples[i];
     sp.visible = fpOn && i < appleAmmo;
-    sp.scale.set(0.19 * appleAspect, 0.19, 1);
+    sp.scale.set(0.19 * appleAspect, 0.19, 1); // half the old size
   }
   for (let i = throwFx.length - 1; i >= 0; i--) {
     const fx = throwFx[i];
@@ -4049,7 +4048,7 @@ function animate() {
   // Phone / apple in hand: Mahoney gets a recoil + toss, Applebee gets a sharp knife-style flick
   viewKick *= 0.8;
   throwAnim *= 0.88;
-    appleThrowAnimL *= 0.8;
+  appleThrowAnimL *= 0.8;
   appleThrowAnimR *= 0.8;
   if (current.kind === "applebee") {
     viewPhoneImg.visible = false; // no apple glued to her hand - just the 5 on the holster
