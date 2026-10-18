@@ -1874,6 +1874,7 @@ function isAlive(e) {
 // attacker = "player", a bot, or nothing. how = "banned", "beam", or nothing.
 function damageBot(bot, amount, how, attacker) {
   if (!bot.alive) return;
+  if (attacker === "player" && honeyBoostUntil > performance.now()) amount *= 1 + HONEY.boostPct; // the bees' +20%
   const dealt = Math.min(amount, bot.health);
   if (attacker === "player") {
     addUltCharge(dealt * current.ultPerDamage);
