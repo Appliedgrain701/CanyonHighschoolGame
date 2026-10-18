@@ -4,17 +4,17 @@ const { WebSocketServer } = require("ws");
 
 const SERVER_VERSION = 8; // the game warns players if this doesn't match game.js
 const PORT = process.env.PORT || 3000;
-const MAX_PLAYERS = 12;
+const MAX_PLAYERS = 30;
 const RESPAWN_MS = 3000;
 const CHARS = { mahoney: { health: 275 }, applebee: { health: 200 } };
 
 // The SERVER decides damage, so players can't edit their own numbers
 const RULES = {
   phone: { dmg: 10, range: 95 },
-  grenade: { dmg: 100, range: 70 },
+  grenade: { dmg: 75, range: 70 },
   beam: { dmg: 150, range: 110 },
   hammer: { dmg: 99999, range: 10 }, // the only one-shot move
-  apple: { dmg: 50, range: 125 }, // Ms. Applebee hitscan apple
+  apple: { dmg: 55, range: 125 }, // Ms. Applebee hitscan apple
   mine: { dmg: 75, range: 90 }, // Ms. Applebee landmine
   hive: { dmg: 50, range: 10, slow: 2000 }, // Ms. Applebee beehive (slows for 2s)
   bee: { dmg: 50, range: 125 }, // Ms. Applebee bee gun blast
