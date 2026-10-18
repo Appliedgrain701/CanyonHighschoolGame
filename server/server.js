@@ -4,7 +4,7 @@ const { WebSocketServer } = require("ws");
 
 const SERVER_VERSION = 8; // the game warns players if this doesn't match game.js
 const PORT = process.env.PORT || 3000;
-const MAX_PLAYERS = 12;
+const MAX_PLAYERS = 100;
 const RESPAWN_MS = 3000;
 const CHARS = { mahoney: { health: 275 }, applebee: { health: 200 } };
 
