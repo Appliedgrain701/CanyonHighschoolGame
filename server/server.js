@@ -11,10 +11,10 @@ const CHARS = { mahoney: { health: 275 }, applebee: { health: 200 } };
 // The SERVER decides damage, so players can't edit their own numbers
 const RULES = {
   phone: { dmg: 10, range: 95 },
-  grenade: { dmg: 100, range: 70 },
+  grenade: { dmg: 75, range: 70 },
   beam: { dmg: 150, range: 110 },
-  hammer: { dmg: 99999, range: 10 }, // the only one-shot move
-  apple: { dmg: 50, range: 125 }, // Ms. Applebee hitscan apple
+  hammer: { dmg: 99999, range: 7 }, // the only one-shot move
+  apple: { dmg: 55, range: 125 }, // Ms. Applebee hitscan apple
   mine: { dmg: 75, range: 90 }, // Ms. Applebee landmine
   hive: { dmg: 50, range: 10, slow: 2000 }, // Ms. Applebee beehive (slows for 2s)
   bee: { dmg: 50, range: 125 }, // Ms. Applebee bee gun blast
@@ -217,7 +217,8 @@ function hit(a, m) {
     a.appleAt = nowA;
   }
 
-  let dmg = rule.dmg;
+    let dmg = rule.dmg;
+  if (a.dmgBoostUntil && Date.now() < a.dmgBoostUntil) dmg *= 1.2; // the bees' +20% from Honey Choice
   if (t.sh) dmg *= 1 - SHIELD_BLOCK;
   const dealt = Math.min(dmg, t.hp + t.bonus);
   // the blue bonus shield soaks damage first
@@ -318,17 +319,33 @@ function onMessage(p, m) {
     }
   } else if (m.t === "hit") {
     hit(p, m);
-  } else if (m.t === "switch") {
+    } else if (m.t === "switch") {
     switchTeacher(p, m);
+  } else if (m.t === "honey") {
+    // Ms. Applebee's Q: the apple heals (sent as one +20 chunk, then ten +3 ticks), the bees boost her damage
+    if (!p.room || !p.ready || !p.alive) return;
+    const now = Date.now();
+    if (m.k === "heal") {
+      if (typeof m.amt !== "number" || m.amt <= 0 || m.amt > 20) return;
+      if (now - p.honeyAt < 900) return; // keeps the once-a-second ticks from being spammed
+      p.honeyAt = now;
+      p.hp = Math.min(p.max, p.hp + m.amt);
+      broadcast(p.room, { t: "hp", id: p.id, hp: +p.hp.toFixed(1), max: p.max, bonus: +p.bonus.toFixed(1), by: 0, dealt: 0 });
+    } else if (m.k === "boost") {
+      if (now - p.lastHoney < 14000) return; // matches her 15s cooldown, minus a little slack for lag
+      p.lastHoney = now;
+      p.dmgBoostUntil = now + 5000;
+    }
   }
 }
 
 wss.on("connection", (ws) => {
   const p = {
     id: nextId++, ws, room: null, name: "Player", ready: false, alive: false,
-    x: 0, z: 0, y: 1, char: "mahoney", yaw: 0, pitch: 0, sh: 0, inv: 0, bonus: 0, hp: 275, max: 275,
+        x: 0, z: 0, y: 1, char: "mahoney", yaw: 0, pitch: 0, sh: 0, inv: 0, bonus: 0, hp: 275, max: 275,
     lastHitBy: 0, lastHitAt: 0,
     kills: 0, deaths: 0, hammerAt: 0, hammerHit: new Set(), respawnTimer: null,
+    honeyAt: 0, lastHoney: 0, dmgBoostUntil: 0, // Ms. Applebee's Q (Honey Choice): heal throttle, ability cooldown, boost expiry
   };
   ws.isAlive = true;
   ws.on("pong", () => (ws.isAlive = true));
