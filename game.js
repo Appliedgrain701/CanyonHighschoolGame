@@ -2859,12 +2859,12 @@ let slowUntil = 0;
 // 5 apples, Jett-knife style: 2 on the outside of each arm, 1 held inside, close to her body
 const orbitApples = [];
 const APPLE_SLOTS = [
-  [-0.5, 1.0, 0.2], [-0.4, 0.78, 0.22], // left arm, outside
-  [0.5, 1.0, 0.2], [0.4, 0.78, 0.22], // right arm, outside
-  [0, 0.95, 0.32], // inside, centered on her body
+  [-0.58, 1.08, 0.2], [-0.42, 0.7, 0.22], // left arm, outside
+  [0.58, 1.08, 0.2], [0.42, 0.7, 0.22], // right arm, outside
+  [0, 0.95, 0.34], // inside, centered on her body
 ];
 for (let i = 0; i < 5; i++) {
-  const sp = new THREE.Sprite(appleSprMat);
+  const sp = new THREE.Sprite(appleSprMat.clone()); // its own material, so it can spin on its own
   sp.visible = false;
   sp.position.set(APPLE_SLOTS[i][0], APPLE_SLOTS[i][1], APPLE_SLOTS[i][2]);
   player.add(sp);
@@ -2877,14 +2877,14 @@ const throwFx = []; // little apple that snaps from the holster to the throw poi
 // Ms. Applebee's holster, seen from her own eyes: 2 apples near each hand, 1 held between them
 const viewApples = [];
 const VIEW_APPLE_SLOTS = [
-  [-0.55, -0.1, -0.8], [-0.42, -0.25, -0.78],
-  [0.55, -0.1, -0.8], [0.42, -0.25, -0.78],
+  [-0.68, -0.05, -0.8], [-0.46, -0.3, -0.78],
+  [0.68, -0.05, -0.8], [0.46, -0.3, -0.78],
   [0, -0.2, -0.7],
 ];
 for (let i = 0; i < 5; i++) {
   const sp = new THREE.Sprite(appleSprMat);
   sp.position.set(VIEW_APPLE_SLOTS[i][0], VIEW_APPLE_SLOTS[i][1], VIEW_APPLE_SLOTS[i][2]);
-  sp.scale.set(0.38, 0.38, 1);
+  sp.scale.set(0.19, 0.19, 1); // half the old size
   sp.visible = false;
   viewRoot.add(sp);
   viewApples.push(sp);
@@ -2958,12 +2958,15 @@ function refillApples() {
 
 // Apple flying to where the shot landed (the hit itself is instant)
 const appleFx = [];
-const appleTrailGeo = new THREE.BoxGeometry(0.05, 0.05, 0.6); // thin + long, so it reads as a contrail, not a puff
+const appleTrailGeo = new THREE.BoxGeometry(0.08, 0.08, 0.8); // thin + long, so it reads as a contrail, not a puff
 function addAppleTrailPuff(pos, dir) {
-  const m = new THREE.Mesh(appleTrailGeo, new THREE.MeshBasicMaterial({ color: 0xff2a2a, transparent: true, opacity: 0.95 }));
+  const m = new THREE.Mesh(
+    appleTrailGeo,
+    new THREE.MeshBasicMaterial({ color: 0xff1a1a, transparent: true, opacity: 1, blending: THREE.AdditiveBlending, depthWrite: false })
+  );
   m.position.copy(pos);
   if (dir && dir.lengthSq() > 0.0001) m.lookAt(pos.clone().add(dir));
-  m.userData.life = 22;
+  m.userData.life = 24;
   scene.add(m);
   trails.push(m); // reuses the dash-trail fade-out loop already in animate()
 }
@@ -2984,6 +2987,7 @@ function fireApple() {
   if (thrownIdx === 4) { appleThrowAnimL = 1; appleThrowAnimR = 1; }
   else if (thrownIdx === 0 || thrownIdx === 1) appleThrowAnimL = 1;
   else if (thrownIdx === 2 || thrownIdx === 3) appleThrowAnimR = 1;
+  playAppleWoosh();
   const eye = new THREE.Vector3(player.position.x, player.position.y + 0.7, player.position.z);
   const f = aimDirection(eye);
   let wall = 120;
@@ -3495,18 +3499,19 @@ function updateApples(now) {
     appleAmmo = current.apples || 5;
     appleReload = 0;
   }
-  const on = current.kind === "applebee" && !dead && !isFirstPerson();
+    const on = current.kind === "applebee" && !dead && !isFirstPerson();
   for (let i = 0; i < 5; i++) {
     const sp = orbitApples[i];
     sp.visible = on && i < appleAmmo; // holster empties in slot order as she throws
     sp.position.y = APPLE_SLOTS[i][1] + Math.sin(now / 500 + i) * 0.012; // a light idle breathe
+    sp.material.rotation = now / 700 + i * 1.3; // the slow spin, like the apples originally had - third person only
     sp.scale.set(0.42 * appleAspect, 0.42, 1);
   }
   const fpOn = current.kind === "applebee" && !dead && isFirstPerson();
   for (let i = 0; i < 5; i++) {
     const sp = viewApples[i];
     sp.visible = fpOn && i < appleAmmo;
-    sp.scale.set(0.38 * appleAspect, 0.38, 1);
+    sp.scale.set(0.19 * appleAspect, 0.19, 1);
   }
   for (let i = throwFx.length - 1; i >= 0; i--) {
     const fx = throwFx[i];
@@ -3642,6 +3647,31 @@ function playAppleHit() {
   src.start();
   tone(3400, 2600, 0.07, "triangle", 0.16, 0);
   tone(5200, 4400, 0.05, "sine", 0.09, 0.004);
+}
+function playAppleWhoosh() {
+  const ac = getAudio();
+  if (!ac) return;
+  const dur = 0.22;
+  const n = Math.floor(ac.sampleRate * dur);
+  const buf = ac.createBuffer(1, n, ac.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) data[i] = Math.random() * 2 - 1;
+  const src = ac.createBufferSource();
+  src.buffer = buf;
+  const bp = ac.createBiquadFilter();
+  bp.type = "bandpass";
+  bp.Q.value = 1.1;
+  const t = ac.currentTime;
+  bp.frequency.setValueAtTime(2200, t);
+  bp.frequency.exponentialRampToValueAtTime(450, t + dur);
+  const g = ac.createGain();
+  g.gain.setValueAtTime(0.22, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  src.connect(bp);
+  bp.connect(g);
+  g.connect(ac.destination);
+  src.start(t);
+  src.stop(t + dur + 0.02);
 }
 function playBeeShot() {
   tone(150, 70, 0.28, "sawtooth", 0.12, 0);
