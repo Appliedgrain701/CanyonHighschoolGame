@@ -1341,6 +1341,7 @@ function showPause() {
   pausedAt = performance.now();
   rightHeld = false;
   mouseHeld = false;
+  stopVoice(); // don't leave the mic open behind the menu
   const note = "  |  The match keeps going while this menu is open";
   if (mode === "online" && net) {
     pauseInfo.textContent =
@@ -1618,13 +1619,19 @@ addEventListener("keydown", (e) => {
     showPlayerModel();
   }
 
+  // ` (backtick, top-left of the keyboard on a Chromebook too) = push to talk
+  if (e.code === "Backquote" && !e.repeat && playing) startVoice();
+
   if (!playing || dead || paused || ultPhase !== 0 || e.repeat || performance.now() < holdUntil) return;
   if (e.code === "KeyQ" && current.kind !== "applebee") dash();
   if (e.code === "KeyE") throwGrenade();
   if (e.code === "KeyV") melee();
   if (e.code === "KeyX") startUlt();
 });
-addEventListener("keyup", (e) => (keys[e.code] = false));
+addEventListener("keyup", (e) => {
+  keys[e.code] = false;
+  if (e.code === "Backquote") stopVoice();
+});
 
 // Scroll wheel zooms the third person camera (scroll up = closer, like Roblox)
 addEventListener(
@@ -2037,6 +2044,79 @@ function netFx(k, a) {
   if (mode === "online") netSend({ t: "fx", k, a });
 }
 
+// ================= VOICE CHAT (push to talk, the ` key) =================
+const VOICE_RATE = 16000; // low but clear, and light on bandwidth for the free server
+let voiceStream = null, voiceCtx = null, voiceProc = null, voiceSrc = null, voiceOn = false;
+const voiceNextTime = new Map(); // remote player id -> when their next chunk should start playing
+
+async function startVoice() {
+  if (voiceOn || mode !== "online") return;
+  voiceOn = true;
+  try {
+    voiceStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
+    });
+  } catch (e) {
+    voiceOn = false;
+    addFeedText("Mic blocked - allow microphone access to use voice chat");
+    return;
+  }
+  if (!voiceOn) { voiceStream.getTracks().forEach((t) => t.stop()); return; } // let go of ` while asking permission
+  voiceCtx = getAudio();
+  if (!voiceCtx) { voiceOn = false; return; }
+  voiceSrc = voiceCtx.createMediaStreamSource(voiceStream);
+  voiceProc = voiceCtx.createScriptProcessor(2048, 1, 1);
+  const silence = voiceCtx.createGain();
+  silence.gain.value = 0; // keeps the processor running without echoing your own mic to your speakers
+  voiceSrc.connect(voiceProc);
+  voiceProc.connect(silence);
+  silence.connect(voiceCtx.destination);
+  voiceProc.onaudioprocess = (e) => {
+    if (!voiceOn || !net || !net.ws || net.ws.readyState !== 1) return;
+    const input = e.inputBuffer.getChannelData(0);
+    const ratio = voiceCtx.sampleRate / VOICE_RATE;
+    const outLen = Math.floor(input.length / ratio);
+    const pcm = new Int16Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      const s = Math.max(-1, Math.min(1, input[Math.floor(i * ratio)]));
+      pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    net.ws.send(pcm.buffer);
+  };
+  if (talkChipText) talkChipText.parentElement.style.borderColor = "#3ddc5a";
+}
+
+function stopVoice() {
+  voiceOn = false;
+  if (voiceProc) { voiceProc.disconnect(); voiceProc.onaudioprocess = null; voiceProc = null; }
+  if (voiceSrc) { voiceSrc.disconnect(); voiceSrc = null; }
+  if (voiceStream) { voiceStream.getTracks().forEach((t) => t.stop()); voiceStream = null; }
+  if (talkChipText) talkChipText.parentElement.style.borderColor = "rgba(255,255,255,0.22)";
+}
+
+// Someone else's voice chunk arrived - queue it right after their last chunk so playback stays gapless
+function handleVoicePacket(buf) {
+  if (buf.byteLength < 6) return;
+  const view = new DataView(buf);
+  const fromId = view.getUint32(0, true);
+  if (net && fromId === net.id) return; // never play back your own mic
+  const int16 = new Int16Array(buf, 4);
+  const ac = getAudio();
+  if (!ac) return;
+  const float32 = new Float32Array(int16.length);
+  for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 0x8000;
+  const audioBuf = ac.createBuffer(1, float32.length, VOICE_RATE);
+  audioBuf.copyToChannel(float32, 0);
+  const src = ac.createBufferSource();
+  src.buffer = audioBuf;
+  src.connect(ac.destination);
+  const now = ac.currentTime;
+  let startAt = voiceNextTime.get(fromId) || now;
+  if (startAt < now) startAt = now + 0.03; // a small cushion so chunks never try to play in the past
+  src.start(startAt);
+  voiceNextTime.set(fromId, startAt + audioBuf.duration);
+}
+
 function nameOf(id) {
   if (net && id === net.id) return "You";
   const r = remotes.get(id);
@@ -2250,10 +2330,12 @@ function startOnline(join) {
       failOnline("The server address in config.js isn't valid.");
       return;
     }
+    ws.binaryType = "arraybuffer";
     myNet.ws = ws;
     ws.onopen = () => ws.send(JSON.stringify(Object.assign({ t: "join", name: myName }, join)));
     ws.onmessage = (ev) => {
       if (net !== myNet) return;
+      if (ev.data instanceof ArrayBuffer) return handleVoicePacket(ev.data);
       let m;
       try {
         m = JSON.parse(ev.data);
@@ -3909,6 +3991,7 @@ function sideChip(capHtml, label) {
 }
 const camChipText = sideChip("7", "CAMERA<br><span style='opacity:.7;font-weight:normal'>3rd person</span>");
 sideChip(svgIcon(ICON.wheel, 16), "ZOOM<br><span style='opacity:.7;font-weight:normal'>scroll wheel</span>");
+const talkChipText = sideChip("`", "TALK<br><span style='opacity:.7;font-weight:normal'>hold to speak</span>");
 let camChipLast = null;
 function updateSideKeys() {
   if (camChipLast === firstPerson) return;
