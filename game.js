@@ -1,9 +1,12 @@
 import * as THREE from "three";
 import { SERVER_URL } from "./config.js"; // your Render address lives in config.js
 
-const GAME_BUILD = 14;
+const GAME_BUILD = 15;
+// Shared arena dimensions: keep game.js and server.js in sync.
+const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
+
 const buildBadge = document.createElement("div");
-buildBadge.textContent = "GAME v14 • BOT / OFFLINE";
+buildBadge.textContent = "GAME v15 • BOT / OFFLINE";
 buildBadge.style.cssText = "position:fixed;top:5px;left:8px;z-index:10000;color:#fff;background:#111b;padding:3px 7px;font:11px sans-serif;pointer-events:none";
 document.body.appendChild(buildBadge);
 
@@ -24,7 +27,7 @@ sun.position.set(10, 20, 10);
 scene.add(sun);
 
 const floor = new THREE.Mesh(
-  new THREE.PlaneGeometry(100, 100),
+  new THREE.PlaneGeometry(MAP.halfX * 2 + 4, MAP.halfZ * 2 + 4),
   new THREE.MeshStandardMaterial({ color: 0x55aa55 })
 );
 floor.rotation.x = -Math.PI / 2;
@@ -193,13 +196,62 @@ makeGoalpost(-44);
 makeGoalpost(44);
 
 
+// ================= SIX-LANE RUNNING TRACK =================
+// A stadium-shaped loop surrounds the field; all six lanes are walkable.
+const TRACK = { straightHalf: 40, innerRadius: 26, lanes: 6, laneWidth: 2 };
+function trackOutline(path, radius) {
+  path.moveTo(radius, -TRACK.straightHalf);
+  path.lineTo(radius, TRACK.straightHalf);
+  path.absarc(0, TRACK.straightHalf, radius, 0, Math.PI, false);
+  path.lineTo(-radius, -TRACK.straightHalf);
+  path.absarc(0, -TRACK.straightHalf, radius, Math.PI, Math.PI * 2, false);
+  path.closePath();
+  return path;
+}
+function trackStrip(inner, outer, color, height) {
+  const shape = trackOutline(new THREE.Shape(), outer);
+  shape.holes.push(trackOutline(new THREE.Path(), inner));
+  const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape, 64),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.95, side: THREE.DoubleSide }));
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.position.y = height;
+  scene.add(mesh);
+}
+// Flat gray walking apron connects the track with the bleachers.
+trackStrip(25.5, 42, 0x898d90, 0.025);
+for (let lane = 0; lane < TRACK.lanes; lane++) {
+  const inner = TRACK.innerRadius + lane * TRACK.laneWidth;
+  trackStrip(inner, inner + TRACK.laneWidth, lane % 2 ? 0xa84435 : 0xb64f3e, 0.035);
+}
+for (let lane = 0; lane <= TRACK.lanes; lane++) {
+  const radius = TRACK.innerRadius + lane * TRACK.laneWidth;
+  trackStrip(radius - 0.045, radius + 0.045, 0xffffff, 0.045);
+}
+const finishLine = new THREE.Mesh(new THREE.PlaneGeometry(12, 0.22),
+  new THREE.MeshBasicMaterial({ color: 0xffffff }));
+finishLine.rotation.x = -Math.PI / 2;
+finishLine.position.set(32, 0.05, 18);
+scene.add(finishLine);
+for (let lane = 0; lane < TRACK.lanes; lane++) {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 128;
+  const text = canvas.getContext("2d");
+  text.fillStyle = "white"; text.font = "bold 100px sans-serif";
+  text.textAlign = "center"; text.textBaseline = "middle";
+  text.fillText(String(lane + 1), 64, 64);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const number = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 1.6),
+    new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false }));
+  number.rotation.x = -Math.PI / 2;
+  number.position.set(27 + lane * TRACK.laneWidth, 0.055, 20);
+  scene.add(number);
+}
+
 // ----- Walls and cover -----
 // x/z = center, w = width, d = depth, h = height (default 6), color = hex
 // Add  photo: "hall.jpg"  to any wall to put a photo on it.
 const walls = [
-  // fences around the field (side fences are low so you can see the bleachers)
-  { x: 0, z: -47, w: 48, d: 2, h: 6, color: 0x444444 },
-  { x: 0, z: 47, w: 48, d: 2, h: 6, color: 0x444444 },
   // cover (equipment and benches)
   { x: -10, z: -22, w: 5, d: 2, h: 3, color: 0x1a2a6c },
   { x: 10, z: -22, w: 5, d: 2, h: 3, color: 0x1a2a6c },
@@ -210,15 +262,15 @@ const walls = [
 ];
 
 // ===== walkable bleachers, announcer room, stairs =====
-function fence(x, z0, z1) { walls.push({ x, z: (z0 + z1) / 2, w: 2, d: z1 - z0, h: 2.5, color: 0x444444 }); }
-for (const sx of [-23, 23]) { fence(sx, -48, -39); fence(sx, -33, -6); fence(sx, 6, 33); fence(sx, 39, 48); }
+// No field-side fences: players can cross freely onto the track.
+const bleacherStart = walls.length;
 for (const side of [-1, 1]) {
   for (let i = 0; i < 8; i++) {
     const top = 0.5 * (i + 1);
     walls.push({ x: side * (24.8 + i * 1.6), z: 0, w: 1.6, d: 60, y0: i < 4 ? 0 : top - 0.3, h: top, color: i % 2 ? 0x7b858f : 0x9aa3ad });
   }
   walls.push({ x: side * 37, z: 0, w: 0.4, d: 60, h: 4.6, color: 0x555555 });
-  const bl = new THREE.PointLight(0xffe0b0, 1.2, 14); bl.position.set(side * 33.5, 1.5, 0); scene.add(bl);
+  const bl = new THREE.PointLight(0xffe0b0, 1.2, 14); bl.position.set(side * 53.5, 1.5, 0); scene.add(bl);
 }
 const RY = 6; // announcer room floor height
 walls.push(
@@ -234,7 +286,16 @@ walls.push(
 for (let k = 0; k < 12; k++) {
   walls.push({ x: -44, z: 27 - 1.25 * (k + 0.5), w: 4, d: 1.25, h: 0.5 * (k + 1), color: k % 2 ? 0x777777 : 0x999999 });
 }
-const roomLight = new THREE.PointLight(0xfff0d0, 1.5, 20); roomLight.position.set(-42.5, 8, 0); scene.add(roomLight);
+// Move both bleacher banks and the announcer building 20m toward the map edges.
+for (let i = bleacherStart; i < walls.length; i++) walls[i].x += Math.sign(walls[i].x) * 20;
+// Fence only the expanded outer perimeter, beyond the track and bleachers.
+walls.push(
+  { x: 0, z: -MAP.halfZ, w: MAP.halfX * 2, d: 1, h: 3, color: 0x444444 },
+  { x: 0, z: MAP.halfZ, w: MAP.halfX * 2, d: 1, h: 3, color: 0x444444 },
+  { x: -MAP.halfX, z: 0, w: 1, d: MAP.halfZ * 2, h: 3, color: 0x444444 },
+  { x: MAP.halfX, z: 0, w: 1, d: MAP.halfZ * 2, h: 3, color: 0x444444 }
+);
+const roomLight = new THREE.PointLight(0xfff0d0, 1.5, 20); roomLight.position.set(-62.5, 8, 0); scene.add(roomLight);
 
 const wallBoxes = [];
 for (const wall of walls) {
@@ -310,8 +371,8 @@ function physicsStep(dt, canJump) {
 
 // Two-way teleporter: field (east side) <-> announcer room
 const pads = [
-  { x: 18, z: -30, y: 0, to: [-41, 6, 0], c: 0x00e5ff },
-  { x: -43.5, z: -8, y: 6, to: [18, 0, -26], c: 0xff66ff },
+  { x: 18, z: -30, y: 0, to: [-61, 6, 0], c: 0x00e5ff },
+  { x: -63.5, z: -8, y: 6, to: [18, 0, -26], c: 0xff66ff },
 ];
 for (const pd of pads) {
   const m = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, 0.12, 24), new THREE.MeshStandardMaterial({ color: pd.c, emissive: pd.c, emissiveIntensity: 0.9 }));
@@ -2119,8 +2180,8 @@ function updateBots(dt, t) {
         pos.z += (oz / od) * 0.05;
       }
     }
-    pos.x = Math.max(-48, Math.min(48, pos.x));
-    pos.z = Math.max(-48, Math.min(48, pos.z));
+    pos.x = Math.max(-MAP.limitX, Math.min(MAP.limitX, pos.x));
+    pos.z = Math.max(-MAP.limitZ, Math.min(MAP.limitZ, pos.z));
     pushOutOfWalls(pos);
 
     // shooting: wait a moment after spotting someone, then fire bursts
@@ -2485,11 +2546,11 @@ function handleNet(m) {
   switch (m.t) {
     case "welcome": {
       if (m.v !== GAME_BUILD) {
-        buildBadge.textContent = "GAME v14 / SERVER v" + m.v + " — UPDATE BOTH FILES";
-        failOnline("Version mismatch: game v14 needs server v14. Replace both files and restart the server, then refresh the game.");
+        buildBadge.textContent = "GAME v15 / SERVER v" + m.v + " — UPDATE BOTH FILES";
+        failOnline("Version mismatch: game v15 needs server v15. Replace both files and restart the server, then refresh the game.");
         return;
       }
-      buildBadge.textContent = "GAME v14 / SERVER v14";
+      buildBadge.textContent = "GAME v15 / SERVER v15";
       net.id = m.id;
       net.code = m.code;
       for (const p of m.players) addRemote(p);
@@ -2796,7 +2857,7 @@ function landKnockback(from, target) {
   const out = { x: target.x, y: target.y, z: target.z };
   for (let step = 1; step <= 30; step++) {
     const x = target.x + ux * step * 0.1, z = target.z + uz * step * 0.1;
-    if (Math.abs(x) > 48 || Math.abs(z) > 48) break;
+    if (Math.abs(x) > MAP.limitX || Math.abs(z) > MAP.limitZ) break;
     if (wallBoxes.some(b => target.y - 1 < b.h && target.y + 1 > b.y0 &&
       x > b.minX - 0.6 && x < b.maxX + 0.6 && z > b.minZ - 0.6 && z < b.maxZ + 0.6)) break;
     out.x = x; out.z = z;
@@ -4521,8 +4582,8 @@ function animate() {
       });
     }
 
-    player.position.x = Math.max(-48, Math.min(48, player.position.x));
-    player.position.z = Math.max(-48, Math.min(48, player.position.z));
+    player.position.x = Math.max(-MAP.limitX, Math.min(MAP.limitX, player.position.x));
+    player.position.z = Math.max(-MAP.limitZ, Math.min(MAP.limitZ, player.position.z));
 
     // Hold the mouse to keep shooting
     if (mouseHeld && current.kind !== "land") tryShoot();
