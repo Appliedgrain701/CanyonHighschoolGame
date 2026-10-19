@@ -386,18 +386,7 @@ const characters = {
     picture: "mrland.png",
     health: 225,
     speed: 0.15,
-    // No abilities yet except the red primary beam below.
-    ultCost: 100, ultStartCharge: 0, ultPassivePerSec: 0,
-    ultPerDamage: 0, ultPerKill: 0,
-  },
-  // Texture registration only; Cleetus has no separate selection or transformation yet.
-  cleetus: {
-    name: "Cleetus",
-    kind: "land",
-    color: 0x4d8bba,
-    picture: "cleetus.png",
-    health: 225,
-    speed: 0.15,
+    // Appearance only for now; no attacks or abilities.
     ultCost: 100, ultStartCharge: 0, ultPassivePerSec: 0,
     ultPerDamage: 0, ultPerKill: 0,
   },
@@ -451,7 +440,6 @@ const BEAM_HIT_RADIUS = 1.4;
 const BEAM_LIFE = 45; // frames a beam stays visible
 const PHONE_VIEW = { x: 0.38, y: -0.36, z: -0.8 }; // where the phone sits in first person
 const NET_RATE = 50; // ms between position updates sent online (20 per second)
-const SERVER_VERSION = 10; // protocol version; a difference is not proof the server is outdated
 const LAST_HIT_WINDOW = 10000; // ms: switching teachers gives the kill to whoever hit you in this time
 
 // ----- BOT SETTINGS (change these to make bots easier or harder) -----
@@ -869,10 +857,8 @@ function updateRoomHud() {
   }
   const where =
     net.code === "PUBLIC" ? "PUBLIC LOBBY" : "ROOM CODE: " + net.code + " (share it with friends)";
-  roomHud.textContent =
-    where + "   |   Players: " + (remotes.size + 1) +
-    (net.old ? "   |   Versions differ (game " + SERVER_VERSION + ", server " + net.serverVersion + ")" : "");
-  roomHud.style.color = net.old ? "#ffdb8a" : "#ffd700";
+  roomHud.textContent = where + "   |   Players: " + (remotes.size + 1);
+  roomHud.style.color = "#ffd700";
   roomHud.style.display = "block";
 }
 
@@ -1431,8 +1417,6 @@ function makeCard(locked) {
 }
 
 for (const key in characters) {
-  // Cleetus is texture-only for now, not a second selectable teacher.
-  if (key === "cleetus") continue;
   const c = characters[key];
   const hex = "#" + c.color.toString(16).padStart(6, "0");
   const card = makeCard(false);
@@ -1517,9 +1501,7 @@ function selectCharacter(key) {
   playerHealth = maxHealth;
   speed = current.speed;
   lastShot = lastDash = lastGrenade = lastMelee = -99999;
-  landDamageTick = -99999;
   mouseHeld = false;
-  stopLandBeam();
   resetApples();
   bonusShield = 0;
   dashFrames = 0;
@@ -1662,7 +1644,7 @@ addEventListener("keydown", (e) => {
   if (e.code === "Backquote" && !e.repeat && playing) startVoice();
 
   if (!playing || dead || paused || ultPhase !== 0 || e.repeat || performance.now() < holdUntil) return;
-  // Mr. Land and Cleetus are primary-beam-only while being developed.
+  // Mr. Land has no active abilities yet.
   if (current.kind === "land") return;
   if (e.code === "KeyQ") {
     if (current.kind !== "applebee") dash();
@@ -1705,7 +1687,7 @@ addEventListener("mousemove", (e) => {
   }
 });
 
-// Left click: Mr. Land uses a red, target-required tracking beam (no other abilities yet).
+// Mr. Land has no mouse attacks while his abilities are being designed.
 addEventListener("mousedown", (e) => {
   if (!playing || dead || paused || !document.pointerLockElement) return;
   if (current.kind === "applebee" && honeyChoiceUntil > performance.now()) {
@@ -1727,11 +1709,7 @@ addEventListener("mousedown", (e) => {
     fireBeam();
     return;
   }
-  if (current.kind === "land") {
-    mouseHeld = true;
-    landAutoAimAttack();
-    return;
-  }
+  if (current.kind === "land") return; // no primary fire yet
   mouseHeld = true;
   tryShoot();
 });
@@ -1739,7 +1717,6 @@ addEventListener("mouseup", (e) => {
   if (e.button === 2) rightHeld = false;
   if (e.button === 0) {
     mouseHeld = false;
-    stopLandBeam();
   }
 });
 addEventListener("contextmenu", (e) => e.preventDefault());
@@ -1748,7 +1725,6 @@ document.addEventListener("pointerlockchange", () => {
   if (!document.pointerLockElement) {
     rightHeld = false;
     mouseHeld = false;
-    stopLandBeam();
     // the mouse got released (Esc was pressed): open the pause menu.
     // Skip this for a moment right after picking a teacher, since some browsers
     // fire this same event when the lock request itself just failed or is still
@@ -2374,7 +2350,7 @@ function startOnline(join) {
   modeOverlay.style.display = "none";
   privateOverlay.style.display = "none";
 
-  const myNet = { ws: null, id: null, code: "", ready: false, join, old: false, serverVersion: "?" };
+  const myNet = { ws: null, id: null, code: "", ready: false, join };
   net = myNet;
   let tries = 0;
 
@@ -2424,8 +2400,6 @@ function handleNet(m) {
     case "welcome": {
       net.id = m.id;
       net.code = m.code;
-      net.serverVersion = m.v ?? "?";
-      net.old = m.v !== SERVER_VERSION; // a version mismatch is NOT necessarily an old server
       for (const p of m.players) addRemote(p);
       statusOverlay.style.display = "none";
       inMatch = false;
@@ -2613,9 +2587,6 @@ function handleFx(m) {
   } else if (m.k === "z") {
     addZone(a[0], a[1], a[2], a[3], a[4], false);
     boomAt(new THREE.Vector3(a[0], a[1] + 0.5, a[2]), a[3], 0xffd23f);
-  } else if (m.k === "lt" && a.length >= 6) {
-    // Only a visible, target-locked beam gets broadcast from its owner.
-    showRemoteLandBeam(m.id, new THREE.Vector3(a[3], a[4], a[5]));
   }
 
 }
@@ -2677,173 +2648,6 @@ function aimDirection(eye) {
   return dir.normalize();
 }
 
-// ================= MR. LAND: RED AUTO-TRACKING PRIMARY =================
-// Inspired by Scarlet Witch's Chaos Control: a short-range continuous beam
-// that tracks one living enemy in a generous aim cylinder around the crosshair.
-// Nothing is rendered or damaged without a valid visible player / bot.
-const LAND_RANGE = 10;             // max world-unit distance from Mr. Land
-const LAND_AIM_RADIUS = 3.0;       // target must be this near the crosshair ray
-const LAND_TICK_MS = 100;          // one damage tick every 0.1 seconds
-const LAND_TICK_DAMAGE = 2;        // exactly 20 damage per second while tracking
-let landDamageTick = -99999;
-let landLockedEntity = null;
-let landFxAt = -99999;
-
-function nearestLandTarget() {
-  const eye = camera.getWorldPosition(new THREE.Vector3());
-  const view = camera.getWorldDirection(new THREE.Vector3()).normalize();
-  let best = null;
-  let bestScore = Infinity;
-  const consider = (entity, type) => {
-    if (!entity.alive || !entity.mesh || !entity.mesh.visible) return;
-    const pos = entity.mesh.position;
-    const range = player.position.distanceTo(pos);
-    if (range > LAND_RANGE || range < 0.05) return;
-    if (!hasLineOfSight(player.position, pos)) return;
-    const delta = pos.clone().sub(eye);
-    const along = delta.dot(view);
-    if (along <= 0 || along > LAND_RANGE + camDist + 3) return;
-    const offset = Math.sqrt(Math.max(0, delta.lengthSq() - along * along));
-    if (offset > LAND_AIM_RADIUS) return;
-    // Aim near the target, and keep the previous lock stable while it is valid.
-    const score = offset + range * 0.025 - (entity === landLockedEntity ? 0.65 : 0);
-    if (score < bestScore) {
-      bestScore = score;
-      best = { entity, type };
-    }
-  };
-  if (mode === "bots") for (const bot of bots) consider(bot, "bot");
-  if (mode === "online") for (const r of remotes.values()) consider(r, "remote");
-  return best;
-}
-
-// Glow layers make this look like a red energy tether, not a projectile gun.
-function makeLandBeamVisual() {
-  const group = new THREE.Group();
-  const createLayer = (radius, color, opacity) => {
-    const mesh = new THREE.Mesh(
-      new THREE.CylinderGeometry(radius, radius, 1, 10, 1, true),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity,
-        depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide })
-    );
-    mesh.renderOrder = 12;
-    group.add(mesh);
-    return mesh;
-  };
-  const segments = Array.from({ length: 6 }, () => ({
-    outer: createLayer(0.16, 0xff112c, 0.24),
-    middle: createLayer(0.085, 0xff1642, 0.68),
-    core: createLayer(0.03, 0xffd6d6, 0.95),
-  }));
-  const impact = new THREE.Mesh(
-    new THREE.SphereGeometry(0.20, 10, 8),
-    new THREE.MeshBasicMaterial({ color: 0xff284c, transparent: true, opacity: 0.85,
-      blending: THREE.AdditiveBlending, depthWrite: false })
-  );
-  group.add(impact);
-  group.visible = false;
-  scene.add(group);
-  return { group, segments, impact };
-}
-
-const landBeam = makeLandBeamVisual();
-const remoteLandBeams = new Map();
-const beamUp = new THREE.Vector3(0, 1, 0);
-function positionLandBeam(effect, origin, target, now) {
-  const diff = target.clone().sub(origin);
-  const sideways = new THREE.Vector3(-diff.z, 0, diff.x);
-  if (sideways.lengthSq() < 0.001) sideways.set(1, 0, 0);
-  sideways.normalize();
-  const points = [];
-  for (let i = 0; i <= effect.segments.length; i++) {
-    const t = i / effect.segments.length;
-    const jitter = Math.sin(t * Math.PI) * Math.sin(now * 0.014 + t * 11) * 0.075;
-    points.push(origin.clone().lerp(target, t).addScaledVector(sideways, jitter));
-  }
-  for (let i = 0; i < effect.segments.length; i++) {
-    const start = points[i], end = points[i + 1];
-    const vec = end.clone().sub(start), length = vec.length();
-    const center = start.clone().add(end).multiplyScalar(0.5);
-    const q = new THREE.Quaternion().setFromUnitVectors(beamUp, vec.normalize());
-    for (const layer of Object.values(effect.segments[i])) {
-      layer.position.copy(center);
-      layer.quaternion.copy(q);
-      layer.scale.set(1, length, 1);
-    }
-  }
-  effect.impact.position.copy(target);
-  const glowSize = 0.85 + Math.sin(now * 0.02) * 0.15;
-  effect.impact.scale.setScalar(glowSize);
-  effect.group.visible = true;
-}
-
-function stopLandBeam() {
-  landLockedEntity = null;
-  landBeam.group.visible = false;
-  landDamageTick = -99999; // never carry charged damage to a newly acquired target
-}
-
-function showRemoteLandBeam(id, destination) {
-  let effect = remoteLandBeams.get(id);
-  if (!effect) {
-    effect = { ...makeLandBeamVisual(), end: destination.clone(), last: 0 };
-    remoteLandBeams.set(id, effect);
-  }
-  effect.end.copy(destination);
-  effect.last = performance.now();
-}
-function updateRemoteLandBeams(now) {
-  for (const [id, effect] of remoteLandBeams) {
-    const remote = remotes.get(id);
-    if (!remote || !remote.alive || now - effect.last > 220) {
-      scene.remove(effect.group);
-      remoteLandBeams.delete(id);
-      continue;
-    }
-    const source = remote.mesh.position.clone().add(new THREE.Vector3(0, 0.55, 0));
-    positionLandBeam(effect, source, effect.end, now);
-  }
-}
-
-function landAutoAimAttack() {
-  if (!playing || dead || paused || current.kind !== "land" || !mouseHeld ||
-      !document.pointerLockElement || ultPhase !== 0 || performance.now() < holdUntil) {
-    stopLandBeam();
-    return;
-  }
-  const target = nearestLandTarget();
-  if (!target) {
-    stopLandBeam(); // no player / bot -> no red beam, no shooting, no damage
-    return;
-  }
-  const now = performance.now();
-  if (landLockedEntity !== target.entity) {
-    landLockedEntity = target.entity;
-    landDamageTick = now; // a new lock starts a new tick interval
-  }
-  const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
-  const right = new THREE.Vector3(-forward.z, 0, forward.x);
-  const origin = firstPerson
-    ? camera.getWorldPosition(new THREE.Vector3()).addScaledVector(
-        camera.getWorldDirection(new THREE.Vector3()), 0.55)
-    : player.position.clone().add(new THREE.Vector3(0, 0.55, 0))
-        .addScaledVector(right, 0.32).addScaledVector(forward, 0.35);
-  const end = target.entity.mesh.position.clone().add(new THREE.Vector3(0, 0.30, 0));
-  positionLandBeam(landBeam, origin, end, now);
-
-  if (mode === "online" && now - landFxAt >= 90) {
-    landFxAt = now;
-    netFx("lt", [origin.x, origin.y, origin.z, end.x, end.y, end.z]);
-  }
-  if (now - landDamageTick < LAND_TICK_MS) return;
-  landDamageTick = now;
-  if (target.type === "bot") {
-    damageBot(target.entity, LAND_TICK_DAMAGE, "land", "player");
-  } else if (mode === "online") {
-    netSend({ t: "hit", target: target.entity.id, k: "landphone" });
-  }
-}
-
 function shoot() {
   viewKick = 1; // hand recoil in first person
   const eye = new THREE.Vector3(player.position.x, player.position.y + 0.7, player.position.z);
@@ -2858,7 +2662,7 @@ function tryShoot() {
   if (!playing || dead || paused || ultPhase !== 0 || shieldUp || meleeStart > 0 || performance.now() < holdUntil) return;
   if (!document.pointerLockElement) return;
   const now = performance.now();
-  if (current.kind === "land") return; // primary beam handled exclusively by landAutoAimAttack
+  if (current.kind === "land") return; // No primary attack implemented
   if (now - lastShot < current.fireDelay) return;
   if (current.kind === "applebee") {
     if (appleReload > 0 || appleAmmo <= 0) return;
@@ -4058,9 +3862,7 @@ function abilityDefs() {
   if (current.kind === "land") {
     return {
       accent: "#65c9ff",
-      tiles: [
-        { key: "LMB", name: "Red tracking beam · 20 DPS", icon: ICON.sun },
-      ],
+      tiles: [],
       ultIcon: ICON.sun,
     };
   }
@@ -4240,9 +4042,10 @@ function buildAbilityBar() {
 }
 
 function updateAbilityBar(now) {
-  const show = playing;
+  // Mr. Land has no abilities: do not display any weapon or ultimate controls.
+  const show = playing && current.kind !== "land";
   abBar.style.display = show ? "flex" : "none";
-  sideKeys.style.display = show ? "flex" : "none";
+  sideKeys.style.display = playing ? "flex" : "none"; // camera and voice controls still work
   if (!show) return;
   if (abKind !== (current.kind || "mahoney")) buildAbilityBar();
   const def = abilityDefs();
@@ -4420,7 +4223,6 @@ function animate() {
   // Other online players
   updateRemotes(dt, now);
   updateApples(now);
-  updateRemoteLandBeams(now);
   updateZones(now);
   updateBeast(dt, now);
   updateCrosshair();
@@ -4642,7 +4444,7 @@ function animate() {
 
   // Ability text
   if (current.kind === "land") {
-    abilityHud.innerHTML = "Hold Left Click: Red tracking beam (20 damage/sec)<br>Only fires with a target within 10m";
+    abilityHud.textContent = "";
   } else if (current.kind === "applebee") {
     abilityHud.innerHTML =
       (appleReload > 0
@@ -4670,7 +4472,7 @@ function animate() {
   const ultReady = ultPct >= 100;
   ultFill.style.width = ultPct + "%";
   ultFill.className = ultReady || ultPhase !== 0 ? "rainbow" : "ultGold";
-  if (current.kind === "land") ultLabel.textContent = "MORE ABILITIES UNDER DEVELOPMENT";
+  if (current.kind === "land") ultLabel.textContent = "";
   else if (current.kind === "applebee" && beast) ultLabel.textContent = beast.phase === "out" ? "BEE BEAST - X: RECALL" : "BEE BEAST RETURNING";
   else if (ultPhase !== 0) ultLabel.textContent = "BALDING!";
   else if (ultReady) ultLabel.textContent = "ULT READY - PRESS X";
@@ -4745,7 +4547,6 @@ function animate() {
     camera.updateProjectionMatrix();
   }
 
-  landAutoAimAttack(); // Camera is current: track the same direction the crosshair sees.
   renderer.render(scene, camera);
 }
 animate();
