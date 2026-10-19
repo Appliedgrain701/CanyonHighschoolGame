@@ -6,7 +6,7 @@ const SERVER_VERSION = 10; // protocol version; differing versions do not imply 
 const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 30;
 const RESPAWN_MS = 3000;
-const CHARS = { mahoney: { health: 275 }, applebee: { health: 200 }, land: { health: 225 }, cleetus: { health: 225 } };
+const CHARS = { mahoney: { health: 275 }, applebee: { health: 200 }, land: { health: 225 } };
 
 // The SERVER decides damage, so players can't edit their own numbers
 const RULES = {
@@ -23,7 +23,6 @@ const RULES = {
   beastend: { dmg: 65, range: 160 }, // ult: final hit when it lets go
   beezone: { dmg: 15, range: 125, slow: 1500 }, // the sticky zone's one tick of damage + slow
   beeslow: { dmg: 0, range: 125, slow: 600 }, // standing in the zone keeps you slowed
-  landphone: { dmg: 2, range: 10 }, // Mr. Land/Cleetus beam: 2 damage every 100ms = 20 damage per second
 };
 const SHIELD_BLOCK = 0.85;
 const BONUS_SHIELD = 50; // blue bonus shield a player gets from siphon (keep the same as game.js)
@@ -168,15 +167,9 @@ function hit(a, m) {
   const t = room.players.get(m.target);
   if (!rule || !t || t === a) return;
   if (!a.ready || !a.alive || !t.ready || !t.alive) return;
-  if ((a.char === "land" || a.char === "cleetus") && m.k !== "landphone") return;
-  if (m.k === "landphone" && a.char !== "land" && a.char !== "cleetus") return;
+  // Mr. Land is a visual-only character for now; server rejects all attacks.
+  if (a.char === "land") return;
   if (Math.hypot(a.x - t.x, a.z - t.z) > rule.range) return;
-  const nowHit = Date.now();
-  if (m.k === "landphone") {
-    if (a.char !== "land" && a.char !== "cleetus") return;
-    if (nowHit - (a.landPhoneAt || 0) < 95) return;
-    a.landPhoneAt = nowHit;
-  }
   if (m.k === "hammer") {
     const now = Date.now();
     if (now - a.hammerAt > HAMMER_COOLDOWN) {
@@ -309,15 +302,17 @@ function onMessage(p, m) {
     p.z = num(m.z, -50, 50, p.z);
     p.yaw = num(m.yaw, -1000, 1000, p.yaw);
     p.pitch = num(m.pitch, -2, 2, p.pitch);
-    p.sh = m.sh ? 1 : 0;
-    p.inv = m.inv ? 1 : 0;
+    p.sh = p.char !== "land" && m.sh ? 1 : 0;
+    p.inv = p.char !== "land" && m.inv ? 1 : 0;
     p.y = num(m.y, -2, 30, p.y);
   } else if (m.t === "fx") {
+    if (p.char === "land") return; // Land cannot trigger ability effects
     // visual effects (phones, grenades, beams) just get passed on to everyone else
     const a = Array.isArray(m.a) ? m.a.slice(0, 8) : [];
     if (!a.every((v) => typeof v === "number" && Number.isFinite(v))) return;
     broadcast(room, { t: "fx", id: p.id, k: String(m.k).slice(0, 2), a }, p.id);
   } else if (m.t === "hold") {
+    if (p.char === "land") return;
     // the beast owner says where the grabbed players are; tell each grabbed player to move there
     const ids = Array.isArray(m.ids) ? m.ids.slice(0, 11) : [];
     const hx = num(m.x, -50, 50, 0), hy = num(m.y, -2, 30, 1), hz = num(m.z, -50, 50, 0);
@@ -332,6 +327,7 @@ function onMessage(p, m) {
   } else if (m.t === "switch") {
     switchTeacher(p, m);
   } else if (m.t === "honey") {
+    if (p.char !== "applebee") return;
     // Ms. Applebee's Q: the apple heals (sent as one +20 chunk, then ten +3 ticks), the bees boost her damage
     if (!p.room || !p.ready || !p.alive) return;
     const now = Date.now();
@@ -355,7 +351,7 @@ wss.on("connection", (ws) => {
     x: 0, z: 0, y: 1, char: "mahoney", yaw: 0, pitch: 0, sh: 0, inv: 0, bonus: 0, hp: 275, max: 275,
     lastHitBy: 0, lastHitAt: 0,
     kills: 0, deaths: 0, hammerAt: 0, hammerHit: new Set(), respawnTimer: null,
-    honeyAt: 0, lastHoney: 0, dmgBoostUntil: 0, landPhoneAt: 0, // primary beam throttle
+    honeyAt: 0, lastHoney: 0, dmgBoostUntil: 0,
   };
   ws.isAlive = true;
   ws.on("pong", () => (ws.isAlive = true));
