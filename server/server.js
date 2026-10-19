@@ -10,13 +10,13 @@ const CHARS = { mahoney: { health: 275 }, applebee: { health: 200 }, land: { hea
 
 // The SERVER decides damage, so players can't edit their own numbers
 const RULES = {
-  landbeam: { dmg: 38, range: 20 }, // damage per second; server-timed channel only
+  landbeam: { dmg: 29, range: 15 }, // damage per second; server-timed channel only
   landblast: { dmg: 52, range: 20 },
   phone: { dmg: 10, range: 95 },
   grenade: { dmg: 75, range: 70 },
   beam: { dmg: 150, range: 110 },
   hammer: { dmg: 99999, range: 10 }, // the only one-shot move
-  apple: { dmg: 55, range: 125 }, // Ms. Applebee hitscan apple
+  apple: { dmg: 50, range: 125 }, // Ms. Applebee hitscan apple
   mine: { dmg: 75, range: 90 }, // Ms. Applebee landmine
   hive: { dmg: 50, range: 10, slow: 2000 }, // Ms. Applebee beehive (slows for 2s)
   bee: { dmg: 50, range: 125 }, // Ms. Applebee bee gun blast
