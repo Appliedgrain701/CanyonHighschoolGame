@@ -2,7 +2,7 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const SERVER_VERSION = 10; // protocol version; differing versions do not imply a stale deployment
+const SERVER_VERSION = 11; // protocol version; differing versions do not imply a stale deployment
 const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 30;
 const RESPAWN_MS = 3000;
@@ -10,11 +10,12 @@ const CHARS = { mahoney: { health: 275 }, applebee: { health: 200 }, land: { hea
 
 // The SERVER decides damage, so players can't edit their own numbers
 const RULES = {
+  landbeam: { dmg: 20, range: 10 }, // damage per second; server-timed channel only
   phone: { dmg: 10, range: 95 },
   grenade: { dmg: 75, range: 70 },
   beam: { dmg: 150, range: 110 },
   hammer: { dmg: 99999, range: 10 }, // the only one-shot move
-  apple: { dmg: 55, range: 125 }, // Ms. Applebee hitscan apple
+  apple: { dmg: 50, range: 125 }, // Ms. Applebee hitscan apple
   mine: { dmg: 75, range: 90 }, // Ms. Applebee landmine
   hive: { dmg: 50, range: 10, slow: 2000 }, // Ms. Applebee beehive (slows for 2s)
   bee: { dmg: 50, range: 125 }, // Ms. Applebee bee gun blast
@@ -147,6 +148,7 @@ function respawn(p) {
   p.hp = p.max;
   p.bonus = 0;
   p.alive = true;
+  p.landTarget = 0;
   p.sh = 0;
   p.inv = 0;
   p.y = 1;
@@ -161,14 +163,15 @@ function siphonPlayer(room, a) {
   broadcast(room, { t: "hp", id: a.id, hp: a.hp, max: a.max, bonus: a.bonus, by: 0, dealt: 0 });
 }
 
-function hit(a, m) {
+function hit(a, m, channelSeconds = 0) {
   const room = a.room;
   const rule = RULES[m.k];
   const t = room.players.get(m.target);
   if (!rule || !t || t === a) return;
   if (!a.ready || !a.alive || !t.ready || !t.alive) return;
-  // Mr. Land is a visual-only character for now; server rejects all attacks.
-  if (a.char === "land") return;
+  // Land can only damage through the server-timed primary channel.
+  if (m.k === "landbeam" && (a.char !== "land" || channelSeconds <= 0)) return;
+  if (a.char === "land" && m.k !== "landbeam") return;
   if (Math.hypot(a.x - t.x, a.z - t.z) > rule.range) return;
   if (m.k === "hammer") {
     const now = Date.now();
@@ -219,8 +222,8 @@ function hit(a, m) {
     a.appleAt = nowA;
   }
 
-  let dmg = rule.dmg;
-  if (a.dmgBoostUntil && Date.now() < a.dmgBoostUntil) dmg *= 1.2; // the bees' +20% from Honey Choice
+  let dmg = rule.dmg * (m.k === "landbeam" ? Math.min(0.1, channelSeconds) : 1);
+  if (a.char === "applebee" && a.dmgBoostUntil && Date.now() < a.dmgBoostUntil) dmg *= 1.2; // the bees' +20% from Honey Choice
   if (t.sh) dmg *= 1 - SHIELD_BLOCK;
   const dealt = Math.min(dmg, t.hp + t.bonus);
   // the blue bonus shield soaks damage first
@@ -297,6 +300,15 @@ function onMessage(p, m) {
 
   if (!p.ready || !p.alive) return;
 
+  if (m.t === "landlock") {
+    if (p.char !== "land") return;
+    const target = Number.isInteger(m.target) ? m.target : 0;
+    if (!p.landTarget || p.landTarget !== target) p.landTickAt = Date.now();
+    p.landTarget = target;
+    p.landLockAt = Date.now();
+    if (!target) broadcast(room, { t: "fx", id: p.id, k: "lb", a: [0] }, p.id);
+    return;
+  }
   if (m.t === "st") {
     p.x = num(m.x, -50, 50, p.x);
     p.z = num(m.z, -50, 50, p.z);
@@ -306,7 +318,7 @@ function onMessage(p, m) {
     p.inv = p.char !== "land" && m.inv ? 1 : 0;
     p.y = num(m.y, -2, 30, p.y);
   } else if (m.t === "fx") {
-    if (p.char === "land") return; // Land cannot trigger ability effects
+    if (p.char === "land" || m.k === "lb") return; // channel effects are server-owned
     // visual effects (phones, grenades, beams) just get passed on to everyone else
     const a = Array.isArray(m.a) ? m.a.slice(0, 8) : [];
     if (!a.every((v) => typeof v === "number" && Number.isFinite(v))) return;
@@ -380,9 +392,87 @@ wss.on("connection", (ws) => {
   ws.on("error", () => {});
 });
 
+// Collision map mirrors game.js; update both when editing arena geometry.
+const walls = [
+  // fences around the field (side fences are low so you can see the bleachers)
+  { x: 0, z: -47, w: 48, d: 2, h: 6, color: 0x444444 },
+  { x: 0, z: 47, w: 48, d: 2, h: 6, color: 0x444444 },
+  // cover (equipment and benches)
+  { x: -10, z: -22, w: 5, d: 2, h: 3, color: 0x1a2a6c },
+  { x: 10, z: -22, w: 5, d: 2, h: 3, color: 0x1a2a6c },
+  { x: -10, z: 22, w: 5, d: 2, h: 3, color: 0x1a2a6c },
+  { x: 10, z: 22, w: 5, d: 2, h: 3, color: 0x1a2a6c },
+  { x: -14, z: 0, w: 2, d: 6, h: 3, color: 0x888888 },
+  { x: 14, z: 0, w: 2, d: 6, h: 3, color: 0x888888 },
+];
+
+// ===== walkable bleachers, announcer room, stairs =====
+function fence(x, z0, z1) { walls.push({ x, z: (z0 + z1) / 2, w: 2, d: z1 - z0, h: 2.5, color: 0x444444 }); }
+for (const sx of [-23, 23]) { fence(sx, -48, -39); fence(sx, -33, -6); fence(sx, 6, 33); fence(sx, 39, 48); }
+for (const side of [-1, 1]) {
+  for (let i = 0; i < 8; i++) {
+    const top = 0.5 * (i + 1);
+    walls.push({ x: side * (24.8 + i * 1.6), z: 0, w: 1.6, d: 60, y0: i < 4 ? 0 : top - 0.3, h: top, color: i % 2 ? 0x7b858f : 0x9aa3ad });
+  }
+  walls.push({ x: side * 37, z: 0, w: 0.4, d: 60, h: 4.6, color: 0x555555 });
+}
+const RY = 6; // announcer room floor height
+walls.push(
+  { x: -42.5, z: 0, w: 10, d: 24, y0: 5.7, h: RY, color: 0x3a3a4a },
+  { x: -47.25, z: 0, w: 0.5, d: 24, y0: RY, h: 9, color: 0x2c2c3c },
+  { x: -37.75, z: 0, w: 0.5, d: 24, y0: RY, h: 7, color: 0x2c2c3c },
+  { x: -42.5, z: -12.25, w: 10, d: 0.5, y0: RY, h: 9, color: 0x2c2c3c },
+  { x: -47, z: 12.25, w: 1, d: 0.5, y0: RY, h: 9, color: 0x2c2c3c },
+  { x: -39.5, z: 12.25, w: 4, d: 0.5, y0: RY, h: 9, color: 0x2c2c3c },
+  { x: -42.5, z: 0, w: 11, d: 25, y0: 9, h: 9.4, color: 0x222233 },
+  { x: -45.5, z: 4, w: 1.2, d: 8, y0: RY, h: 7, color: 0x6b4a2b }
+);
+for (let k = 0; k < 12; k++) {
+  walls.push({ x: -44, z: 27 - 1.25 * (k + 0.5), w: 4, d: 1.25, h: 0.5 * (k + 1), color: k % 2 ? 0x777777 : 0x999999 });
+}
+
+const wallBoxes = walls.map(w => ({ minX: w.x-w.w/2, maxX: w.x+w.w/2, minZ: w.z-w.d/2, maxZ: w.z+w.d/2, y0: w.y0 || 0, h: w.h || 6 }));
+function landLineClear(a, b) {
+  for (const box of wallBoxes) {
+    let lo = 0, hi = 1;
+    for (const [axis, min, max] of [["x", box.minX, box.maxX], ["y", box.y0, box.h], ["z", box.minZ, box.maxZ]]) {
+      const d = b[axis] - a[axis];
+      if (Math.abs(d) < 1e-8) {
+        if (a[axis] < min || a[axis] > max) { lo = 2; break; }
+      } else {
+        const t1 = (min - a[axis]) / d, t2 = (max - a[axis]) / d;
+        lo = Math.max(lo, Math.min(t1, t2));
+        hi = Math.min(hi, Math.max(t1, t2));
+      }
+    }
+    if (lo <= hi && hi > 0 && lo < 1) return false;
+  }
+  return true;
+}
+
+function updateLandChannel(p, now) {
+  if (!p.landTarget) return;
+  const t = p.room.players.get(p.landTarget);
+  const dx = t ? t.x - p.x : 0, dy = t ? t.y - p.y : 0, dz = t ? t.z - p.z : 0;
+  const distance = Math.hypot(dx, dy, dz);
+  const facing = distance < 0.001 ? 1 : (-Math.sin(p.yaw) * Math.cos(p.pitch) * dx + Math.sin(p.pitch) * dy - Math.cos(p.yaw) * Math.cos(p.pitch) * dz) / distance;
+  if (p.char !== "land" || !p.alive || !p.ready || !t || t === p || !t.alive || !t.ready ||
+      now - p.landLockAt > 250 || distance > 10 || facing < Math.cos(Math.PI / 4) ||
+      !landLineClear({ x: p.x, y: p.y + 0.5, z: p.z }, { x: t.x, y: t.y + 0.5, z: t.z })) {
+    p.landTarget = 0;
+    broadcast(p.room, { t: "fx", id: p.id, k: "lb", a: [0] }, p.id);
+    return;
+  }
+  const seconds = Math.max(0, Math.min(0.1, (now - p.landTickAt) / 1000));
+  p.landTickAt = now;
+  hit(p, { k: "landbeam", target: t.id }, seconds);
+  broadcast(p.room, { t: "fx", id: p.id, k: "lb", a: [t.alive ? t.id : 0] }, p.id);
+}
+
 // send everyone's position 20 times a second
 setInterval(() => {
   for (const room of rooms.values()) {
+    for (const p of room.players.values()) updateLandChannel(p, Date.now());
     if (room.players.size < 2) continue;
     const list = [];
     for (const p of room.players.values()) {
