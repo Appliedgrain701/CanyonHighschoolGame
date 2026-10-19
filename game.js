@@ -379,6 +379,25 @@ const characters = {
     ultDamage: 150, // damage per beam
     ultBeams: 3,
   },
+  land: {
+    name: "Mr. Land / Cleetus",
+    kind: "land",
+    color: 0x4d8bba,
+    picture: "mrland.png",
+    health: 250,
+    speed: 0.15,
+    fireDelay: 100,
+    damage: 20,
+    burst: 1,
+    spread: 0,
+    landPhoneCooldown: 7000,
+    ultCost: 100,
+    ultStartCharge: 0,
+    ultPassivePerSec: 0.7,
+    ultPerDamage: 0.07,
+    ultPerKill: 8,
+    ultBeams: 3,
+  },
   applebee: {
     name: "Ms. Applebee",
     kind: "applebee",
@@ -461,6 +480,9 @@ let maxHealth = current.health;
 let playerHealth = maxHealth;
 let speed = current.speed;
 let lastShot = -99999;
+let lastLandPhone = -99999;
+let landForm = "land";
+let landSprintUntil = 0;
 let lastDash = -99999;
 let lastGrenade = -99999;
 let lastMelee = -99999;
@@ -1448,6 +1470,12 @@ for (const key in characters) {
     card.style.borderColor = "#4a5da8";
     card.style.boxShadow = "0 10px 30px rgba(0,0,0,0.45)";
   });
+  if (key === "land") {
+    const status = document.createElement("div");
+    status.textContent = "UNDER DEVELOPMENT";
+    status.style.cssText = "padding:7px 4px;text-align:center;font-size:10px;font-weight:900;letter-spacing:1.5px;color:#ffcc2f;background:#080d1c;";
+    card.appendChild(status);
+  }
   card.addEventListener("click", () => selectCharacter(key));
 }
 const soonCard = makeCard(true);
@@ -1481,6 +1509,7 @@ function selectCharacter(key) {
   lastAttacker = null;
 
   current = characters[key];
+  landForm = "land";
   player.material.color.setHex(current.color);
   loadBodyPicture(current.picture);
   maxHealth = current.health;
@@ -1597,6 +1626,12 @@ function damagePlayer(amount, attacker) {
 const keys = {};
 addEventListener("keydown", (e) => {
   keys[e.code] = true;
+  if (e.code === "ShiftRight" && current.kind === "land") landSprintUntil = performance.now() + 150;
+  if (e.code === "ShiftLeft" && !e.repeat && current.kind === "land" && playing && !paused) {
+    landForm = landForm === "land" ? "cleetus" : "land";
+    hpName.textContent = myName.toUpperCase() + "  ·  " + (landForm === "land" ? "MR. LAND" : "CLEETUS");
+    addFeedText("Switched to " + (landForm === "land" ? "Mr. Land" : "Cleetus") + " — UNDER DEVELOPMENT");
+  }
 
   // Esc closes the pause menu (ignored for a moment so the Esc that opened it doesn't close it)
   if (
@@ -1631,8 +1666,8 @@ addEventListener("keydown", (e) => {
 
   if (!playing || dead || paused || ultPhase !== 0 || e.repeat || performance.now() < holdUntil) return;
   if (e.code === "KeyQ") {
-    if (current.kind !== "applebee") dash();
-    else useHoney();
+    if (current.kind !== "applebee" && current.kind !== "land") dash();
+    else if (current.kind === "applebee") useHoney();
   }
   if (e.code === "KeyE") throwGrenade();
   if (e.code === "KeyV") melee();
@@ -1680,6 +1715,10 @@ addEventListener("mousedown", (e) => {
     return;
   }
   if (e.button === 2) {
+    if (current.kind === "land") {
+      fireLandPhone();
+      return;
+    }
     if (current.kind === "applebee") {
       fireBeeGun();
       return;
@@ -1690,6 +1729,11 @@ addEventListener("mousedown", (e) => {
   if (e.button !== 0) return;
   if (ultPhase === 2) {
     fireBeam();
+    return;
+  }
+  if (current.kind === "land") {
+    mouseHeld = true;
+    landAutoAimAttack();
     return;
   }
   mouseHeld = true;
@@ -1938,6 +1982,7 @@ function updateBots(dt, t) {
       if (t >= bot.respawnAt) respawnBot(bot);
       continue;
     }
+    if (performance.now() < (bot.stunnedUntil || 0)) continue;
     const pos = bot.mesh.position;
     bot.flash = Math.max(0, bot.flash - dt);
     bot.mesh.material.color.setHex(bot.flash > 0 ? 0xffffff : bot.color);
@@ -2626,6 +2671,56 @@ function aimDirection(eye) {
   if (dir.length() < 1.5) return f;
   return dir.normalize();
 }
+
+// Mr. Land: lock onto the nearest visible target and deal 20 damage per second.
+let landDamageTick = -99999;
+function landAutoAimAttack() {
+  if (!playing || dead || paused || current.kind !== "land" || !document.pointerLockElement) return;
+  const now = performance.now();
+  if (now - landDamageTick < 1000) return;
+  let target = null, best = 22;
+  for (const bot of bots) {
+    if (!bot.alive) continue;
+    const d = Math.hypot(bot.mesh.position.x - player.position.x, bot.mesh.position.z - player.position.z);
+    if (d < best && hasLineOfSight(player.position, bot.mesh.position)) { best = d; target = bot; }
+  }
+  if (target) {
+    landDamageTick = now;
+    damageBot(target, 20, "land", "player");
+    hitmarker(target.health <= 20);
+    addFeedText("Mr. Land locked on: -20 HP");
+  }
+}
+
+// Big phone: 40 damage, knockback about 3 metres, and a 1-second stun.
+function fireLandPhone() {
+  const now = performance.now();
+  if (current.kind !== "land" || now - lastLandPhone < current.landPhoneCooldown) return;
+  lastLandPhone = now;
+  let target = null, best = 28;
+  for (const bot of bots) {
+    if (!bot.alive) continue;
+    const d = Math.hypot(bot.mesh.position.x - player.position.x, bot.mesh.position.z - player.position.z);
+    if (d < best && hasLineOfSight(player.position, bot.mesh.position)) { best = d; target = bot; }
+  }
+  throwAnim = 1;
+  if (!target) { addFeedText("Big Phone fired — no target in range"); return; }
+  damageBot(target, 40, "land", "player");
+  const dx = target.mesh.position.x - player.position.x;
+  const dz = target.mesh.position.z - player.position.z;
+  const len = Math.hypot(dx, dz) || 1;
+  target.mesh.position.x += dx / len * 3;
+  target.mesh.position.z += dz / len * 3;
+  target.stunnedUntil = now + 1000;
+  addFeedText("BIG PHONE! 40 damage • knockback • 1s stun");
+  const phone = new THREE.Mesh(phoneGeo, phoneMat);
+  phone.scale.set(2.2 * phoneAspect, 2.2, 1);
+  phone.position.copy(player.position).add(new THREE.Vector3(dx / len * 1.2, 0.5, dz / len * 1.2));
+  scene.add(phone);
+  phone.userData.landFxLife = 18;
+  landPhoneFx.push(phone);
+}
+const landPhoneFx = [];
 
 function shoot() {
   viewKick = 1; // hand recoil in first person
@@ -3834,6 +3929,18 @@ const ICON = {
 const CHAMFER = "polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px)";
 
 function abilityDefs() {
+  if (current.kind === "land") {
+    return {
+      accent: "#65c9ff",
+      tiles: [
+        { key: "LMB", name: "Auto Aim (20 DPS)", icon: ICON.phones },
+        { key: "RMB", name: "Big Phone", icon: ICON.grenade, cd: () => [lastLandPhone, current.landPhoneCooldown] },
+        { key: "L SHIFT", name: "Land / Cleetus", icon: ICON.dash },
+        { key: "Q", name: "Desk Sprint", icon: ICON.dash },
+      ],
+      ultIcon: ICON.sun,
+    };
+  }
   if (current.kind === "applebee") {
     return {
       accent: "#ffcc2f",
@@ -4136,7 +4243,7 @@ function animate() {
 
   // Movement (not while the Esc menu is open)
   if (playing && !dead && !paused && ultPhase === 0 && now >= holdUntil) {
-    const moveSpeed = (shieldUp ? speed * current.shieldSpeed : speed) * (now < slowUntil ? 0.5 : 1);
+    const moveSpeed = (shieldUp ? speed * current.shieldSpeed : speed) * (now < slowUntil ? 0.5 : 1) * (current.kind === "land" && (keys.ShiftRight || now < landSprintUntil) ? 2.0 : 1);
     const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
     const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
     if (keys.KeyW) player.position.addScaledVector(forward, moveSpeed);
@@ -4159,6 +4266,7 @@ function animate() {
 
     // Hold the mouse to keep shooting
     if (mouseHeld) tryShoot();
+    if (current.kind === "land" && mouseHeld) landAutoAimAttack();
   }
   pushOutOfWalls(player.position, player.position.y - 1, STEP_HEIGHT);
   physicsStep(dt, playing && !dead && !paused && ultPhase === 0 && now >= holdUntil);
@@ -4190,6 +4298,12 @@ function animate() {
   // Other online players
   updateRemotes(dt, now);
   updateApples(now);
+  for (let i = landPhoneFx.length - 1; i >= 0; i--) {
+    const fx = landPhoneFx[i];
+    fx.userData.landFxLife--;
+    fx.position.y += 0.015;
+    if (fx.userData.landFxLife <= 0) { scene.remove(fx); landPhoneFx.splice(i, 1); }
+  }
   updateZones(now);
   updateBeast(dt, now);
   updateCrosshair();
