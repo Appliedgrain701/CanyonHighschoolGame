@@ -1,12 +1,12 @@
 import * as THREE from "three";
 import { SERVER_URL } from "./config.js"; // your Render address lives in config.js
 
-const GAME_BUILD = 15;
+const GAME_BUILD = 16;
 // Shared arena dimensions: keep game.js and server.js in sync.
 const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
 
 const buildBadge = document.createElement("div");
-buildBadge.textContent = "GAME v15 • BOT / OFFLINE";
+buildBadge.textContent = "GAME v16 • BOT / OFFLINE";
 buildBadge.style.cssText = "position:fixed;top:5px;left:8px;z-index:10000;color:#fff;background:#111b;padding:3px 7px;font:11px sans-serif;pointer-events:none";
 document.body.appendChild(buildBadge);
 
@@ -147,7 +147,7 @@ ctx.fillRect(632, 0, 8, 1440);
 ctx.font = "bold 80px sans-serif";
 ctx.textAlign = "center";
 ctx.textBaseline = "middle";
-ctx.fillText("COUGARS", 320, 60);
+ctx.fillText("CANYON", 320, 60);
 ctx.fillText("COUGARS", 320, 1380);
 
 const fieldTex = new THREE.CanvasTexture(fc);
@@ -253,12 +253,12 @@ for (let lane = 0; lane < TRACK.lanes; lane++) {
 // Add  photo: "hall.jpg"  to any wall to put a photo on it.
 const walls = [
   // cover (equipment and benches)
-  { x: -10, z: -22, w: 5, d: 2, h: 3, color: 0x1a2a6c },
-  { x: 10, z: -22, w: 5, d: 2, h: 3, color: 0x1a2a6c },
-  { x: -10, z: 22, w: 5, d: 2, h: 3, color: 0x1a2a6c },
-  { x: 10, z: 22, w: 5, d: 2, h: 3, color: 0x1a2a6c },
-  { x: -14, z: 0, w: 2, d: 6, h: 3, color: 0x888888 },
-  { x: 14, z: 0, w: 2, d: 6, h: 3, color: 0x888888 },
+  { x: -10, z: -22, w: 5, d: 2, h: 3, color: 0xb5122a },
+  { x: 10, z: -22, w: 5, d: 2, h: 3, color: 0xb5122a },
+  { x: -10, z: 22, w: 5, d: 2, h: 3, color: 0xb5122a },
+  { x: 10, z: 22, w: 5, d: 2, h: 3, color: 0xb5122a },
+  { x: -14, z: 0, w: 2, d: 6, h: 3, color: 0x24262b },
+  { x: 14, z: 0, w: 2, d: 6, h: 3, color: 0x24262b },
 ];
 
 // ===== walkable bleachers, announcer room, stairs =====
@@ -267,7 +267,7 @@ const bleacherStart = walls.length;
 for (const side of [-1, 1]) {
   for (let i = 0; i < 8; i++) {
     const top = 0.5 * (i + 1);
-    walls.push({ x: side * (24.8 + i * 1.6), z: 0, w: 1.6, d: 60, y0: i < 4 ? 0 : top - 0.3, h: top, color: i % 2 ? 0x7b858f : 0x9aa3ad });
+    walls.push({ x: side * (24.8 + i * 1.6), z: 0, w: 1.6, d: 60, y0: i < 4 ? 0 : top - 0.3, h: top, color: i % 2 ? 0xb5122a : 0xd9dde0 });
   }
   walls.push({ x: side * 37, z: 0, w: 0.4, d: 60, h: 4.6, color: 0x555555 });
   const bl = new THREE.PointLight(0xffe0b0, 1.2, 14); bl.position.set(side * 53.5, 1.5, 0); scene.add(bl);
@@ -297,6 +297,59 @@ walls.push(
 );
 const roomLight = new THREE.PointLight(0xfff0d0, 1.5, 20); roomLight.position.set(-62.5, 8, 0); scene.add(roomLight);
 
+// ================= CANYON COUGARS STADIUM PROPS =================
+// Every solid piece goes through walls, so movement and attack collision agree.
+function stadiumBlock(x, z, w, d, y0, h, color) {
+  walls.push({ x, z, w, d, y0, h, color });
+}
+const concession = { x: 54, z: -49 };
+// Concession booth: counter, serving window, back wall and striped canopy.
+stadiumBlock(54, -52.8, 14, 0.4, 0, 4, 0xb5122a);
+stadiumBlock(47.2, -49, 0.4, 8, 0, 4, 0xb5122a);
+stadiumBlock(60.8, -49, 0.4, 8, 0, 4, 0xb5122a);
+stadiumBlock(54, -45.2, 14, 0.4, 0, 1.15, 0xb5122a);
+stadiumBlock(54, -44.9, 14.6, 1.1, 1.15, 1.3, 0xe6e7e9);
+stadiumBlock(54, -45.2, 14, 0.4, 3, 4, 0x202126);
+stadiumBlock(54, -49, 15, 9, 4, 4.25, 0x202126);
+for (let stripe = 0; stripe < 14; stripe++) {
+  stadiumBlock(47.5 + stripe, -44.4, 1, 2.2, 3, 3.15, stripe % 2 ? 0xffffff : 0xb5122a);
+}
+// Picnic tables: jumpable tabletop and two low benches.
+const picnicSpots = [[53, -36], [65, -36], [63, 35]];
+for (const [x, z] of picnicSpots) {
+  stadiumBlock(x, z, 4, 1.5, 0.9, 1.1, 0xb5122a);
+  for (const side of [-1, 1]) {
+    stadiumBlock(x, z + side * 1.25, 4, 0.5, 0.4, 0.55, 0xd9dde0);
+    stadiumBlock(x + side * 1.3, z, 0.18, 2.8, 0, 0.9, 0x292b30);
+  }
+}
+// Sideline benches and water coolers, entirely inside the track's inner edge.
+const sidelineSpots = [[22.5, -23], [-22.5, 23]];
+for (const [x, z] of sidelineSpots) {
+  stadiumBlock(x, z, 1.2, 7, 0.5, 0.7, 0xd9dde0);
+  stadiumBlock(x + Math.sign(x) * 0.5, z, 0.15, 7, 0.7, 1.45, 0xb5122a);
+  for (const dz of [-2.6, 2.6]) stadiumBlock(x, z + dz, 0.8, 0.15, 0, 0.5, 0x292b30);
+  stadiumBlock(x, z + 4.8, 1.2, 1.2, 0, 1.25, 0xb5122a);
+}
+// Blocking sleds / padded tackling stations; players can flank each end.
+const sledSpots = [[-19, -9], [19, 9], [-48, 43], [48, 43]];
+for (const [x, z] of sledSpots) {
+  stadiumBlock(x, z, 3.8, 2, 0, 0.2, 0x24262b);
+  for (const dx of [-1.2, 0, 1.2]) {
+    stadiumBlock(x + dx, z, 0.22, 0.25, 0.2, 1, 0xd9dde0);
+    stadiumBlock(x + dx, z, 0.8, 0.65, 0.7, 2.1, 0xb5122a);
+  }
+}
+const crateSpots = [[-51, -43], [-55, -43], [48, 55], [52, 55], [-48, 55]];
+for (const [x, z] of crateSpots) stadiumBlock(x, z, 2.8, 2.4, 0, 1.7, 0x373a40);
+// North-end stadium board, outside the oval. No false live score display.
+for (const x of [-5.5, 5.5]) stadiumBlock(x, -84, 0.5, 0.5, 0, 8, 0x292b30);
+stadiumBlock(0, -84, 17, 0.8, 5.5, 10.5, 0x202126);
+// Banner uprights beyond the bleacher ends.
+for (const side of [-1, 1]) for (const z of [-34, 34]) {
+  stadiumBlock(side * 46, z, 0.18, 0.18, 0, 6, 0xd9dde0);
+}
+
 const wallBoxes = [];
 for (const wall of walls) {
   const h = wall.h || 6;
@@ -314,6 +367,79 @@ for (const wall of walls) {
     h: h,
     y0: y0,
   });
+}
+
+// Canvas signs are bundled in code; no new image downloads are needed.
+function stadiumSign(lines, width, height, x, y, z, rotation = 0, background = "#a70f26") {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1024; canvas.height = Math.max(128, Math.round(1024 * height / width));
+  const c = canvas.getContext("2d");
+  c.fillStyle = background; c.fillRect(0, 0, canvas.width, canvas.height);
+  c.strokeStyle = "#fff"; c.lineWidth = 10; c.strokeRect(10, 10, canvas.width - 20, canvas.height - 20);
+  c.textAlign = "center"; c.textBaseline = "middle";
+  const row = (canvas.height - 40) / lines.length;
+  lines.forEach((line, i) => {
+    c.fillStyle = "#fff";
+    let size = Math.min(row * 0.65, 100);
+    c.font = "900 " + size + "px sans-serif";
+    while (c.measureText(line).width > 940 && size > 10) { size -= 2; c.font = "900 " + size + "px sans-serif"; }
+    c.fillText(line, 512, 20 + row * (i + 0.5));
+  });
+  const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(width, height), new THREE.MeshBasicMaterial({ map: texture }));
+  sign.position.set(x, y, z); sign.rotation.y = rotation; scene.add(sign);
+  return sign;
+}
+stadiumSign(["COUGAR CONCESSIONS", "CANYON HIGH SCHOOL • COMAL ISD"], 13, 0.8, 54, 3.57, -44.98);
+stadiumSign(["GAME DAY MENU", "HOT DOGS • NACHOS", "POPCORN • COLD DRINKS"], 4, 2.1, 54, 2.3, -52.55, 0, "#202126");
+stadiumSign(["CANYON COUGARS", "COMAL ISD", "DEFEND THE DEN"], 16, 4.4, 0, 8, -83.58, 0, "#a70f26");
+stadiumSign(["COUGAR STADIUM", "CANYON HIGH SCHOOL"], 16, 4.4, 0, 8, -84.42, Math.PI);
+for (const side of [-1, 1]) {
+  for (const z of [-34, 34]) {
+    stadiumSign(["CANYON", "COUGARS"], 2.4, 3, side * 46, 4.4, z + 0.12);
+    stadiumSign(["CANYON", "COUGARS"], 2.4, 3, side * 46, 4.4, z - 0.12, Math.PI);
+  }
+  // Inward-facing bleacher signs and small equipment labels.
+  stadiumSign([side < 0 ? "COUGAR NATION" : "CANYON COUGARS", "COMAL ISD"], 12, 1.4, side * 43.96, 2.2, 0, -side * Math.PI / 2);
+}
+for (const [x, z] of crateSpots) {
+  stadiumSign(["CANYON", "FOOTBALL"], 2.4, 1.2, x, 0.9, z + 1.21, 0, "#202126");
+}
+// Reuse the existing logo.png for a pair of booth plaques; text remains if absent.
+texLoader.load("logo.png", texture => {
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false });
+  for (const x of [48.5, 59.5]) {
+    const badge = new THREE.Mesh(new THREE.PlaneGeometry(1.7, 1.7), material);
+    badge.position.set(x, 2.1, -52.55); scene.add(badge);
+  }
+});
+// Footballs with raised white laces, plus training cones and end-zone pylons.
+const footballMaterial = new THREE.MeshStandardMaterial({ color: 0x793c22, roughness: 0.85 });
+const laceMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff });
+function stadiumFootball(x, y, z) {
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(0.25, 14, 10), footballMaterial);
+  ball.scale.set(1, 1, 1.8); ball.position.set(x, y, z); scene.add(ball);
+  for (let i = -2; i <= 2; i++) {
+    const lace = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.035, 0.025), laceMaterial);
+    lace.position.set(x, y + 0.245, z + i * 0.07); scene.add(lace);
+  }
+}
+for (const [x, z] of sidelineSpots) {
+  stadiumFootball(x, 0.96, z - 1.4); stadiumFootball(x, 0.96, z + 1.4);
+  const lid = new THREE.Mesh(new THREE.CylinderGeometry(0.47, 0.47, 0.1, 14), laceMaterial);
+  lid.position.set(x, 1.3, z + 4.8); scene.add(lid);
+}
+const orangeMaterial = new THREE.MeshStandardMaterial({ color: 0xff721c });
+for (const side of [-1, 1]) {
+  for (let i = 0; i < 5; i++) {
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.65, 10), orangeMaterial);
+    cone.position.set(side * 23, 0.325, -7 + i * 3.5); scene.add(cone);
+  }
+  for (const z of [-40, 40]) {
+    const pylon = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.65, 0.3), orangeMaterial);
+    pylon.position.set(side * 20.2, 0.325, z); scene.add(pylon);
+  }
 }
 
 const STEP_HEIGHT = 0.65, GRAVITY = 26, JUMP_SPEED = 9.5;
@@ -2546,11 +2672,11 @@ function handleNet(m) {
   switch (m.t) {
     case "welcome": {
       if (m.v !== GAME_BUILD) {
-        buildBadge.textContent = "GAME v15 / SERVER v" + m.v + " — UPDATE BOTH FILES";
-        failOnline("Version mismatch: game v15 needs server v15. Replace both files and restart the server, then refresh the game.");
+        buildBadge.textContent = "GAME v16 / SERVER v" + m.v + " — UPDATE BOTH FILES";
+        failOnline("Version mismatch: game v16 needs server v16. Replace both files and restart the server, then refresh the game.");
         return;
       }
-      buildBadge.textContent = "GAME v15 / SERVER v15";
+      buildBadge.textContent = "GAME v16 / SERVER v16";
       net.id = m.id;
       net.code = m.code;
       for (const p of m.players) addRemote(p);
