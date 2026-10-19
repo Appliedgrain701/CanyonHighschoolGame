@@ -2,7 +2,7 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const SERVER_VERSION = 9; // the game warns players if this doesn't match game.js
+const SERVER_VERSION = 10; // protocol version; differing versions do not imply a stale deployment
 const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 30;
 const RESPAWN_MS = 3000;
@@ -23,7 +23,7 @@ const RULES = {
   beastend: { dmg: 65, range: 160 }, // ult: final hit when it lets go
   beezone: { dmg: 15, range: 125, slow: 1500 }, // the sticky zone's one tick of damage + slow
   beeslow: { dmg: 0, range: 125, slow: 600 }, // standing in the zone keeps you slowed
-  landphone: { dmg: 20, range: 10 }, // Mr. Land/Cleetus auto-aim phone, 20 damage per second
+  landphone: { dmg: 2, range: 10 }, // Mr. Land/Cleetus beam: 2 damage every 100ms = 20 damage per second
   landbig: { dmg: 40, range: 10, knockback: 3, stun: 1000 }, // big phone: 40 damage, knockback, and stun
 };
 const SHIELD_BLOCK = 0.85;
@@ -173,7 +173,7 @@ function hit(a, m) {
   const nowHit = Date.now();
   if (m.k === "landphone") {
     if (a.char !== "land" && a.char !== "cleetus") return;
-    if (nowHit - (a.landPhoneAt || 0) < 1000) return;
+    if (nowHit - (a.landPhoneAt || 0) < 95) return;
     a.landPhoneAt = nowHit;
   }
   if (m.k === "landbig") {
@@ -344,6 +344,12 @@ function onMessage(p, m) {
     }
   } else if (m.t === "hit") {
     hit(p, m);
+  } else if (m.t === "form") {
+    // X only changes the Land/Cleetus skin; no respawn or health reset.
+    if ((p.char !== "land" && p.char !== "cleetus") ||
+        (m.char !== "land" && m.char !== "cleetus")) return;
+    p.char = m.char;
+    broadcast(room, { t: "form", id: p.id, char: p.char }, p.id);
   } else if (m.t === "switch") {
     switchTeacher(p, m);
   } else if (m.t === "honey") {
