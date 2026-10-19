@@ -1,12 +1,12 @@
 import * as THREE from "three";
 import { SERVER_URL } from "./config.js"; // your Render address lives in config.js
 
-const GAME_BUILD = 20;
+const GAME_BUILD = 21;
 // Shared arena dimensions: keep game.js and server.js in sync.
 const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
 
 const buildBadge = document.createElement("div");
-buildBadge.textContent = "GAME v20 • BOT / OFFLINE";
+buildBadge.textContent = "GAME v21 • BOT / OFFLINE";
 buildBadge.style.cssText = "position:fixed;top:5px;left:8px;z-index:10000;color:#fff;background:#111b;padding:3px 7px;font:11px sans-serif;pointer-events:none";
 document.body.appendChild(buildBadge);
 
@@ -383,15 +383,15 @@ function stadiumBlock(x, z, w, d, y0, h, color) {
 }
 const concession = { x: 54, z: -49 };
 // Concession booth: counter, serving window, back wall and striped canopy.
-stadiumBlock(54, -52.8, 14, 0.4, 0, 4, 0xb5122a);
-stadiumBlock(47.2, -49, 0.4, 8, 0, 4, 0xb5122a);
-stadiumBlock(60.8, -49, 0.4, 8, 0, 4, 0xb5122a);
+stadiumBlock(54, -52.8, 14, 0.4, 0, 5, 0xb5122a);
+stadiumBlock(47.2, -49, 0.4, 8, 0, 5, 0xb5122a);
+stadiumBlock(60.8, -49, 0.4, 8, 0, 5, 0xb5122a);
 stadiumBlock(54, -45.2, 14, 0.4, 0, 1.15, 0xb5122a);
 stadiumBlock(54, -44.9, 14.6, 1.1, 1.15, 1.3, 0xe6e7e9);
-stadiumBlock(54, -45.2, 14, 0.4, 3, 4, 0x202126);
-stadiumBlock(54, -49, 15, 9, 4, 4.25, 0x202126);
+stadiumBlock(54, -45.2, 14, 0.4, 4.4, 5, 0x202126);
+stadiumBlock(54, -49, 15, 9, 5, 5.25, 0x202126);
 for (let stripe = 0; stripe < 14; stripe++) {
-  stadiumBlock(47.5 + stripe, -44.4, 1, 2.2, 3, 3.15, stripe % 2 ? 0xffffff : 0xb5122a);
+  stadiumBlock(47.5 + stripe, -44.4, 1, 2.2, 4.4, 4.55, stripe % 2 ? 0xffffff : 0xb5122a);
 }
 // Picnic tables: jumpable tabletop and two low benches.
 const picnicSpots = [[53, -36], [65, -36], [63, 35]];
@@ -590,7 +590,7 @@ function checkPads(now) {
   const p = player.position, feet = p.y - 1;
   for (const pd of pads) {
     if (Math.hypot(p.x - pd.x, p.z - pd.z) < 1.2 && Math.abs(feet - pd.y) < 0.6) {
-      p.set(pd.to[0], pd.to[1] + 1, pd.to[2]); velY = 0; padCooldown = now + 1500; break;
+      p.set(pd.to[0], pd.to[1] + 1, pd.to[2]); dashFrames = 0; constrainPlayer(); velY = 0; padCooldown = now + 1500; break;
     }
   }
 }
@@ -816,7 +816,7 @@ const characters = {
     beeCooldown: 8000,
     beeDamage: 50,
     beeRadius: 3.5,
-    zoneDamage: 15, // the zone's single tick of damage
+    zoneDamage: 15, // damage each second inside the sticky area
     zoneSeconds: 5,
     // E: landmine
     grenadeCooldown: 6000,
@@ -2026,7 +2026,7 @@ function selectCharacter(key) {
 
   stopLandBeam();
   landStunUntil = 0;
-  cleetusMode = false; abKind = ""; clearCleetusOrbs();
+  cleetusMode = false; abKind = "";
   current = characters[key];
   player.material.color.setHex(current.color);
   loadBodyPicture(current.picture);
@@ -2286,7 +2286,7 @@ addEventListener("mousedown", (e) => {
     return;
   }
   if (e.button === 2) {
-    if (current.kind === "land") { fireLandBlast(); return; }
+    if (current.kind === "land") { if (cleetusMode) fireCleetusBurst(); else fireLandBlast(); return; }
     if (current.kind === "applebee") {
       fireBeeGun();
       return;
@@ -2462,7 +2462,7 @@ function clearBots() {
 
 function startBotMode() {
   leaveOnline();
-  buildBadge.textContent = "GAME v20 • " + (selectedMap === "roundabout" ? "ROUNDABOUT" : "STADIUM") + " • BOTS";
+  buildBadge.textContent = "GAME v21 • " + (selectedMap === "roundabout" ? "ROUNDABOUT" : "STADIUM") + " • BOTS";
   clearBots();
   for (let i = 0; i < BOT_COUNT; i++) makeBot(i);
   kills = 0;
@@ -2509,7 +2509,7 @@ function isAlive(e) {
 // attacker = "player", a bot, or nothing. how = "banned", "beam", or nothing.
 function damageBot(bot, amount, how, attacker) {
   if (!bot.alive) return;
-  if (attacker === "player" && current.kind === "applebee" && honeyBoostUntil > performance.now()) amount *= 1 + HONEY.boostPct; // the bees' +20%
+  if (how !== "cleetusorb" && how !== "cleetusfield" && attacker === "player" && current.kind === "applebee" && honeyBoostUntil > performance.now()) amount *= 1 + HONEY.boostPct; // the bees' +20%
   const dealt = Math.min(amount, bot.health);
   if (attacker === "player") {
     addUltCharge(dealt * current.ultPerDamage);
@@ -2827,6 +2827,7 @@ function addRemote(p) {
     flash: 0,
     swingStart: 0,
   };
+  r.appleArms = makeAppleArms(mesh);
   r.cleetus = !!p.cleetus;
   r.balding = !!p.balding;
   r.sprinting = !!p.sprint;
@@ -2883,6 +2884,10 @@ function updateRemotes(dt, now) {
   const k = 1 - Math.exp(-dt * 14);
   for (const r of remotes.values()) {
     r.mesh.visible = r.alive;
+    poseAppleArms(r.appleArms,appleJabAmount(now,r.appleJabL??-Infinity),appleJabAmount(now,r.appleJabR??-Infinity),r.alive&&r.char==='applebee');
+    if(r.sprinting&&!r.wasSprinting)playAbilitySound('sprint',r.mesh.position,r.id);
+    if(r.shield&&!r.wasShield)playAbilitySound('shield',r.mesh.position,r.id);
+    r.wasSprinting=r.sprinting;r.wasShield=r.shield;
     r.baldingLabel.visible = r.alive && r.char === "mahoney" && r.balding;
     r.desk.visible = r.alive && r.char === "land" && r.sprinting;
     if (!r.alive) {
@@ -3028,10 +3033,10 @@ function handleNet(m) {
   switch (m.t) {
     case "cleetus": {
       if (m.id === net.id) setCleetusMode(!!m.active);
-      else { const r = remotes.get(m.id); if (r) { r.cleetus = !!m.active; setRemoteChar(r, r.char); } }
+      else { const r = remotes.get(m.id); if (r) { r.cleetus = !!m.active; playAbilitySound("transform",r.mesh.position,r.id); setRemoteChar(r, r.char); } }
       return;
     }
-    case "orbs": syncCleetusOrbs(m.orbs); return;
+    case "orbs": syncCleetusOrbs(m.orbs); syncCleetusFields(m.fields || []); return;
     case "chat":
       addChatMessage(m.name, m.text);
       return;
@@ -3040,11 +3045,11 @@ function handleNet(m) {
       return;
     case "welcome": {
       if (m.v !== GAME_BUILD) {
-        buildBadge.textContent = "GAME v20 / SERVER v" + m.v + " — UPDATE BOTH FILES";
-        failOnline("Version mismatch: game v20 needs server v20. Replace both files and restart the server, then refresh the game.");
+        buildBadge.textContent = "GAME v21 / SERVER v" + m.v + " — UPDATE BOTH FILES";
+        failOnline("Version mismatch: game v21 needs server v21. Replace both files and restart the server, then refresh the game.");
         return;
       }
-      buildBadge.textContent = "GAME v20 / SERVER v20 • " + (m.map === "roundabout" ? "ROUNDABOUT" : "STADIUM");
+      buildBadge.textContent = "GAME v21 / SERVER v21 • " + (m.map === "roundabout" ? "ROUNDABOUT" : "STADIUM");
       applyMap(m.map || "football");
       net.id = m.id;
       net.code = m.code;
@@ -3201,7 +3206,7 @@ function handleNet(m) {
       rightHeld = false;
       shieldUp = false;
       stopLandBeam();
-      addFeedText("STUNNED — 1 second!");
+      addFeedText("STUNNED — " + (m.ms/1000) + "s");
       break;
     }
     case "hold": {
@@ -3226,6 +3231,8 @@ function handleFx(m) {
   }
   const r = remotes.get(m.id);
   if (!r) return;
+  const sound={ls:'blast',p:'phone',g:'throw',b:'laser',u:'ult',h:'melee',m:'mine',q:'beast',e:'recall',d:'dash',a:'throw',v:'blast'}[m.k];
+  if(sound)playAbilitySound(sound,r.mesh.position,r.id);
   if (m.k === "ls") spawnLandBlastFx(new THREE.Vector3(a[0], a[1], a[2]), new THREE.Vector3(a[3], a[4], a[5]));
   else if (m.k === "lb") {
     r.landTarget = a[0];
@@ -3236,7 +3243,7 @@ function handleFx(m) {
   else if (m.k === "b") spawnBeam(new THREE.Vector3(a[0], a[1], a[2]), new THREE.Vector3(a[3], a[4], a[5]));
   else if (m.k === "u") addFeedText(r.name + " is BALDING!");
   else if (m.k === "h") r.swingStart = performance.now();
-  else if (m.k === "a") spawnAppleFx(new THREE.Vector3(a[0], a[1], a[2]), new THREE.Vector3(a[3], a[4], a[5]));
+  else if (m.k === "a") {triggerAppleJab(a[6]??4,r); spawnAppleFx(new THREE.Vector3(a[0], a[1], a[2]), new THREE.Vector3(a[3], a[4], a[5]));}
   else if (m.k === "m") {
     const arr = remoteMines.get(m.id) || [];
     arr.push(makeMineMesh(a[0], a[1], a[2]));
@@ -3304,18 +3311,27 @@ function landLineClear(a, b) {
 }
 
 // Shared deterministic orb movement: slow floating spheres bounce off solid surfaces.
-function stepCleetusOrb(o, dt, boxes, limits) {
+// Small movement steps prevent fast projectiles tunneling through thin walls.
+function stepCleetusOrb(o, dt, boxes, limits, entities = []) {
   o.life -= dt;
-  const radius = 0.24;
-  for (const axis of ['x', 'y', 'z']) {
-    const velocity = 'v' + axis;
-    const old = o[axis];
-    o[axis] += o[velocity] * dt;
-    const blocked = o.y < radius || o.y > 28 || Math.abs(o.x) > limits.limitX || Math.abs(o.z) > limits.limitZ || boxes.some(b =>
-      o.x > b.minX - radius && o.x < b.maxX + radius && o.z > b.minZ - radius && o.z < b.maxZ + radius && o.y > b.y0 - radius && o.y < b.h + radius);
-    if (blocked) { o[axis] = old; o[velocity] *= -1; o.bounces++; }
+  const steps = Math.max(1, Math.ceil(dt / 0.008));
+  for (let n = 0; n < steps; n++) {
+    const nearby = entities.some(p => Math.hypot(o.x-p.x,o.y-(p.y+0.45),o.z-p.z) < 3.5);
+    const speed = o.kind === 'burst' ? 18 : (o.bounces > 0 || nearby ? 4 : 32);
+    const length = Math.hypot(o.vx,o.vy,o.vz) || 1;
+    o.vx=o.vx/length*speed; o.vy=o.vy/length*speed; o.vz=o.vz/length*speed;
+    for (const axis of ['x','y','z']) {
+      const velocity='v'+axis, old=o[axis];
+      if (!o[velocity]) continue;
+      o[axis]+=o[velocity]*dt/steps;
+      const r=o.kind==='burst' ? .5 : .24;
+      const blocked=o.y<r || o.y>28 || Math.abs(o.x)>limits.limitX || Math.abs(o.z)>limits.limitZ || boxes.some(b=>
+        o.x>b.minX-r && o.x<b.maxX+r && o.z>b.minZ-r && o.z<b.maxZ+r && o.y>b.y0-r && o.y<b.h+r);
+      if (blocked) {o[axis]=old;o[velocity]*=-1;o.bounces++; if(o.kind==='burst') return false;}
+    }
+    if(o.kind==='burst' && entities.some(p=>Math.hypot(o.x-p.x,o.y-(p.y+.45),o.z-p.z)<1.5)) return false;
   }
-  return o.life > 0 && o.bounces <= 10;
+  return o.life>0 && o.bounces<=10;
 }
 
 // Cleetus is a form of Land, not a teacher switch: no teleport, refill, or cooldown reset.
@@ -3337,6 +3353,7 @@ function updateCleetusOverlay() {
   cleetusLabel.style.display = active ? 'block' : 'none';
 }
 function clearCleetusOrbs(owner) {
+  if (owner === undefined) clearCleetusFields();
   for (const [id,o] of cleetusOrbs) if (owner === undefined || o.owner === owner) {
     scene.remove(o.mesh); cleetusOrbs.delete(id);
   }
@@ -3345,8 +3362,9 @@ function setCleetusMode(active) {
   active = !!active && current.kind === 'land';
   if (active !== cleetusMode) {
     cleetusMode = active;
+    playAbilitySound("transform");
     stopLandBeam(); mouseHeld = false;
-    clearCleetusOrbs(mode === 'online' ? net?.id : 'local');
+
     loadBodyPicture(active ? 'Cleetus.png' : current.picture);
     abKind = ''; // rebuild the primary icon text for this form
   }
@@ -3359,6 +3377,7 @@ function toggleCleetus() {
 }
 function makeCleetusOrb(o) {
   const mesh = new THREE.Mesh(orbGeometry,orbMaterial);
+  if(o.kind==='burst') mesh.scale.setScalar(2.5);
   const halo = new THREE.Mesh(orbGeometry,orbHaloMaterial); halo.scale.setScalar(2.3); mesh.add(halo);
   mesh.position.set(o.x,o.y,o.z); scene.add(mesh);
   return {...o,mesh};
@@ -3369,7 +3388,7 @@ function syncCleetusOrbs(orbs) {
   for (const o of orbs) {
     live.add(o.id);
     let item = cleetusOrbs.get(o.id);
-    if (!item) { item = makeCleetusOrb(o); cleetusOrbs.set(o.id,item); }
+    if (!item) { item = makeCleetusOrb(o); cleetusOrbs.set(o.id,item); if(o.owner!==net?.id)playAbilitySound(o.kind==='burst'?'burst':'orb',item.mesh.position,o.owner); }
     item.x=o.x; item.y=o.y; item.z=o.z;
   }
   for (const [id,o] of cleetusOrbs) if (!live.has(id)) {scene.remove(o.mesh);cleetusOrbs.delete(id);}
@@ -3385,7 +3404,7 @@ function fireCleetusOrbLocal() {
     const id = ++localOrbSequence;
     cleetusOrbs.set(id,makeCleetusOrb({id,owner:'local',x:eye.x,y:eye.y,z:eye.z,vx:dir.x*6,vy:dir.y*6,vz:dir.z*6,life:4,bounces:0}));
   }
-  tone(180,90,.12,'sine',.07,0);
+  playAbilitySound('orb');
 }
 function updateCleetusOrbsLocal(dt) {
   if (mode === 'online') {
@@ -3397,22 +3416,69 @@ function updateCleetusOrbsLocal(dt) {
     }
     return;
   }
-  if (!playing || dead || !cleetusMode || current.kind !== 'land') {clearCleetusOrbs();return;}
+  if (!playing || dead) {clearCleetusOrbs();clearCleetusFields();return;}
   if (paused) return;
   for (const [id,o] of cleetusOrbs) {
-    if (!stepCleetusOrb(o,dt,wallBoxes,MAP)) {scene.remove(o.mesh);cleetusOrbs.delete(id);continue;}
+    if (!stepCleetusOrb(o,dt,wallBoxes,MAP,bots.filter(b=>b.alive).map(b=>b.mesh.position))) {if(o.kind==='burst') addCleetusField({...o,until:performance.now()+5000,nextPulse:performance.now()});scene.remove(o.mesh);cleetusOrbs.delete(id);continue;}
     o.mesh.position.set(o.x,o.y,o.z);
   }
-  if (performance.now() < landStunUntil) return;
   let healed=0;
   for (const bot of bots) {
     if (!bot.alive) continue;
     const center={x:bot.mesh.position.x,y:bot.mesh.position.y+0.45,z:bot.mesh.position.z};
-    if (![...cleetusOrbs.values()].some(o=>Math.hypot(o.x-center.x,o.y-center.y,o.z-center.z)<=2.5 && landLineClear(o,center))) continue;
+    if (![...cleetusOrbs.values()].some(o=>o.kind!=='burst'&&Math.hypot(o.x-center.x,o.y-center.y,o.z-center.z)<=2.5 && landLineClear(o,center))) continue;
     const dealt=Math.min(bot.health,7*dt);
     damageBot(bot,dealt,'cleetusorb','player'); healed+=dealt;
   }
   if (healed>0) {playerHealth=Math.min(maxHealth,playerHealth+healed);updateHealthBar();}
+}
+
+let lastCleetusBurst = -Infinity;
+const cleetusFields = new Map();
+const fieldGeometry = new THREE.SphereGeometry(5,32,16);
+const fieldBaseMaterial = new THREE.MeshBasicMaterial({color:0xc61045,transparent:true,opacity:.10,depthWrite:false,side:THREE.DoubleSide});
+function clearCleetusFields() {
+  for(const f of cleetusFields.values()){scene.remove(f.mesh);f.mesh.material.dispose();}
+  cleetusFields.clear();
+}
+function addCleetusField(f) {
+  const mesh=new THREE.Mesh(fieldGeometry,fieldBaseMaterial.clone());
+  mesh.position.set(f.x,f.y,f.z);scene.add(mesh);
+  cleetusFields.set(f.id,{...f,mesh,born:performance.now()});
+  playAbilitySound('field',mesh.position);
+}
+function syncCleetusFields(fields) {
+  if(mode!=='online') return;
+  const live=new Set();
+  for(const f of fields){live.add(f.id);if(!cleetusFields.has(f.id))addCleetusField(f);}
+  for(const [id,f] of cleetusFields)if(!live.has(id)){scene.remove(f.mesh);f.mesh.material.dispose();cleetusFields.delete(id);}
+}
+function fireCleetusBurst() {
+  const now=performance.now();
+  if(!cleetusMode || now-lastCleetusBurst<10000) return;
+  lastCleetusBurst=now;
+  const eye=player.position.clone();eye.y+=.45;
+  const dir=aimDirection(eye);
+  if(mode==='online')netSend({t:'cleetusburst',dx:dir.x,dy:dir.y,dz:dir.z});
+  else {const id=++localOrbSequence;cleetusOrbs.set(id,makeCleetusOrb({id,owner:'local',kind:'burst',x:eye.x,y:eye.y,z:eye.z,vx:dir.x*18,vy:dir.y*18,vz:dir.z*18,life:1.2,bounces:0}));}
+  playAbilitySound('burst');
+}
+function updateCleetusFields(dt,now) {
+  if(mode!=='online' && paused)return;
+  for(const [id,f] of cleetusFields) {
+    const age=(now-f.born)/1000;
+    f.mesh.material.opacity=.09+.09*Math.pow(Math.max(0,1-(age%1)*4),2);
+    if(mode==='online'){const pulse=Math.floor(age);if(f.soundPulse!==pulse){f.soundPulse=pulse;playAbilitySound('pulse',f.mesh.position,String(f.id));}continue;}
+    if(!playing || dead || now>=f.until){scene.remove(f.mesh);f.mesh.material.dispose();cleetusFields.delete(id);continue;}
+    for(const b of bots){
+      if(!b.alive)continue;
+      const center={x:b.mesh.position.x,y:b.mesh.position.y+.45,z:b.mesh.position.z};
+      if(Math.hypot(center.x-f.x,center.y-f.y,center.z-f.z)>5||!landLineClear(f,center))continue;
+      damageBot(b,20*dt,'cleetusfield','player');
+      if(now>=f.nextPulse)b.stunnedUntil=Math.max(b.stunnedUntil||0,now+250);
+    }
+    if(now>=f.nextPulse){f.nextPulse=now+1000;playAbilitySound('pulse',f.mesh.position);}
+  }
 }
 
 const landPhoneMaterial = new THREE.SpriteMaterial({ map: phoneTexture, transparent: true, alphaTest: 0.05, depthWrite: false });
@@ -3426,6 +3492,7 @@ function makeLandBeam() {
 const landBeam = makeLandBeam();
 let landTarget = null, landSentTarget = 0, landSentAt = 0;
 function drawLandBeam(group, from, to, now) {
+  if (now - (group.userData.soundAt || 0) > 240) { playAbilitySound("beam", from, group.uuid); group.userData.soundAt = now; }
   group.visible = true;
   const start = from.clone().add(new THREE.Vector3(0, 0.5, 0));
   const end = to.clone().add(new THREE.Vector3(0, 0.5, 0));
@@ -3499,6 +3566,7 @@ function fireLandBlast() {
   const now = performance.now();
   if (current.kind !== "land" || !playing || dead || paused || now < landStunUntil ||
       now < holdUntil || now - lastLandBlast < current.blastCooldown) return;
+  playAbilitySound("blast");
   lastLandBlast = now;
   const origin = player.position.clone().add(new THREE.Vector3(0, 0.5, 0));
   const dir = aimDirection(origin);
@@ -3629,6 +3697,7 @@ function aimDirection(eye) {
 }
 
 function shoot() {
+  playAbilitySound("phone");
   viewKick = 1; // hand recoil in first person
   const eye = new THREE.Vector3(player.position.x, player.position.y + 0.7, player.position.z);
   const ad = aimDirection(eye);
@@ -3671,6 +3740,22 @@ function addTrailPuff(pos) {
   trails.push(m);
 }
 
+function constrainPlayer() {
+  player.position.x=Math.max(-MAP.limitX,Math.min(MAP.limitX,player.position.x));
+  player.position.z=Math.max(-MAP.limitZ,Math.min(MAP.limitZ,player.position.z));
+}
+function moveDashSafely(distance) {
+  const count=Math.max(1,Math.ceil(distance/.15));
+  for(let i=0;i<count;i++) {
+    const old=player.position.clone();
+    player.position.addScaledVector(dashDir,distance/count);
+    const wanted=player.position.clone();
+    pushOutOfWalls(player.position,player.position.y-1,0);
+    constrainPlayer();
+    if(player.position.distanceTo(wanted)>.001){player.position.copy(old);dashFrames=0;break;}
+  }
+}
+
 function dash() {
   if (performance.now() - lastDash < current.dashCooldown) return;
   lastDash = performance.now();
@@ -3686,6 +3771,7 @@ function dash() {
   if (dashDir.lengthSq() === 0) dashDir.copy(forward); // standing still: dash the way you face
   dashDir.normalize();
   dashFrames = DASH_FRAMES;
+  playAbilitySound("dash"); netFx("d", []);
 }
 
 // ================= MR. MAHONEY: PHONE GRENADE (E) =================
@@ -3710,6 +3796,7 @@ function throwGrenade() {
     placeMine();
     return;
   }
+  playAbilitySound("throw");
   throwAnim = 1; // arm throw in first person
   const x = player.position.x - Math.sin(yaw) * 0.8;
   const z = player.position.z - Math.cos(yaw) * 0.8;
@@ -3757,6 +3844,7 @@ function melee() {
   const now = performance.now();
   if (now - lastMelee < current.meleeCooldown || meleeStart > 0) return;
   lastMelee = now;
+  playAbilitySound("melee");
   meleeStart = now;
   meleeHit = false;
   netFx("h", []);
@@ -3798,6 +3886,7 @@ function startUlt() {
     if (beast) {
       // X again = call the beast back to her
       if (beast.phase === "out") {
+        playAbilitySound("recall");
         beast.phase = "back";
         beast.backAt = performance.now();
       }
@@ -3807,6 +3896,7 @@ function startUlt() {
     return;
   }
   if (ultPhase !== 0 || ultCharge < current.ultCost) return;
+  playAbilitySound("ult");
   ultPhase = 1; // bald head close-up
   if (mode === "bots") ultShield = 250;
   else netSend({ t: "balding", active: true });
@@ -3907,6 +3997,7 @@ function fireBeam() {
   // beam starts above your eyes (his head) and lines up on the crosshair
   const origin = eye.clone().addScaledVector(up, 0.5).addScaledVector(f, 1.0);
   spawnBeam(origin, target);
+  playAbilitySound("laser");
   netFx("b", [origin.x, origin.y, origin.z, target.x, target.y, target.z]);
 
   // damage everything on the line
@@ -4054,6 +4145,7 @@ function resetApples() {
   beeAnimStart = 0;
   appleThrowAnimL = 0;
   appleThrowAnimR = 0;
+  appleJabL = appleJabR = -Infinity;
   holdUntil = 0;
   lastHoney = -99999;
   honeyChoiceUntil = 0;
@@ -4096,6 +4188,7 @@ function spawnAppleFx(from, to) {
 function fireApple() {
   const now = performance.now();
   const thrownIdx = current.kind === "applebee" ? Math.max(0, Math.min(4, appleAmmo - 1)) : -1;
+  triggerAppleJab(thrownIdx);
   appleAmmo--;
   viewKick = 1;
   // slots 0-1 are the left-side apples, 2-3 are the right-side apples, 4 is the middle one (both hands)
@@ -4133,7 +4226,7 @@ function fireApple() {
     throwFx.push({ sp, from: holsterPos, to: origin, t0: now, dur: 140 });
   }
   spawnAppleFx(origin, end);
-  netFx("a", [origin.x, origin.y, origin.z, end.x, end.y, end.z]);
+  netFx("a", [origin.x, origin.y, origin.z, end.x, end.y, end.z, thrownIdx]);
   if (best) playAppleHit();
   if (best && best.bot) damageBot(best.bot, current.appleDamage, "apple", "player");
   else if (best && best.r) netSend({ t: "hit", target: best.r.id, k: "apple" });
@@ -4182,6 +4275,7 @@ function placeMine() {
     scene.remove(old.g);
     netFx("mr", [old.x, old.y, old.z]);
   }
+  playAbilitySound("mine");
   mines.push({ g: makeMineMesh(x, y, z), x, y, z, armAt: performance.now() + 700 });
   netFx("m", [x, y, z]);
 }
@@ -4341,6 +4435,7 @@ function clearZones() {
   for (const zn of zones) if (zn.owner) { scene.remove(zn.g); }
   for (let i = zones.length - 1; i >= 0; i--) if (zones[i].owner) zones.splice(i, 1);
 }
+const stickyDamageAt = new Map();
 function updateZones(now) {
   const active = playing && !dead && current.kind === "applebee";
   for (let i = zones.length - 1; i >= 0; i--) {
@@ -4359,15 +4454,15 @@ function updateZones(now) {
     for (const bot of bots) {
       if (!bot.alive || !inside(bot.mesh.position)) continue;
       bot.slowUntil = now / 1000 + 0.6;
-      if (!zn.hit.has(bot)) {
-        zn.hit.add(bot);
-        damageBot(bot, current.zoneDamage, "bee", "player"); // the zone's one tick of damage
+      if (now - (stickyDamageAt.get(bot) ?? -Infinity) >= 1000) {
+        stickyDamageAt.set(bot, now);
+        damageBot(bot, characters.applebee.zoneDamage, "bee", "player");
       }
     }
     for (const r of remotes.values()) {
       if (!r.alive || !inside(r.mesh.position)) continue;
-      if (!zn.hit.has(r.id)) {
-        zn.hit.add(r.id);
+      if (now - (stickyDamageAt.get(r.id) ?? -Infinity) >= 1000) {
+        stickyDamageAt.set(r.id, now);
         netSend({ t: "hit", target: r.id, k: "beezone" });
       } else if (doSlow) netSend({ t: "hit", target: r.id, k: "beeslow" });
     }
@@ -4497,6 +4592,7 @@ function castBeast() {
   mesh.position.copy(pos);
   beast = { mesh, pos, dir, phase: "out", traveled: 0, t0: now, backAt: 0, captured: new Map(), nextTick: now + BEAST.tickMs, lastSend: 0 };
   addFeedText("BEE BEAST! Press X to call it back");
+  playAbilitySound("beast");
   netFx("q", []);
   playBeeShot();
 }
@@ -4614,7 +4710,59 @@ function updateBeast(dt, now) {
 }
 
 // Per-frame: reload timer, circling apples, flying apple pictures
+// Fast forward jab with a smooth recovery, independent of frame rate.
+let appleJabL = -Infinity, appleJabR = -Infinity;
+function appleJabAmount(now, start) {
+  const t=(now-start)/1000;
+  if(t<0||t>=.32)return 0;
+  const smooth=u=>u*u*(3-2*u);
+  return t<.075?smooth(t/.075):1-smooth((t-.075)/.245);
+}
+function triggerAppleJab(index, remote) {
+  const now=performance.now();
+  if(remote){if(index<2||index===4)remote.appleJabL=now;if(index>=2)remote.appleJabR=now;}
+  else {if(index<2||index===4)appleJabL=now;if(index>=2)appleJabR=now;}
+}
+function makeAppleArms(parent) {
+  const arms=[];
+  for(const side of [-1,1]) {
+    const pivot=new THREE.Group();pivot.position.set(side*.36,.3,0);
+    const sleeve=new THREE.Mesh(new THREE.BoxGeometry(.15,.15,.6),sleeveMat);sleeve.position.z=-.3;pivot.add(sleeve);
+    const hand=new THREE.Mesh(new THREE.SphereGeometry(.095,10,8),skinMat);hand.position.z=-.65;pivot.add(hand);
+    parent.add(pivot);arms.push(pivot);
+  }
+  return arms;
+}
+const appleThirdArms=makeAppleArms(player);
+function poseAppleArms(arms,left,right,visible) {
+  for(let i=0;i<2;i++){
+    const side=i===0?-1:1, jab=i===0?left:right, arm=arms[i];
+    arm.visible=visible;arm.position.set(side*(.36-jab*.14),.25+jab*.15,-jab*.5);
+    arm.rotation.set(-.18+jab*.15,side*(.2-jab*.15),side*.05);
+  }
+}
+const appleContrails=[];
+const appleTrailGeometry=new THREE.CylinderGeometry(.045,.07,1,6);
+const appleTrailMaterial=new THREE.MeshBasicMaterial({color:0xff163c,transparent:true,opacity:.95,depthWrite:false,blending:THREE.AdditiveBlending});
+function appleContrail(from,to) {
+  const delta=new THREE.Vector3().subVectors(to,from), length=delta.length();
+  if(length<.025)return;
+  const mesh=new THREE.Mesh(appleTrailGeometry,appleTrailMaterial.clone());
+  mesh.position.copy(from).add(to).multiplyScalar(.5);mesh.scale.y=length;
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),delta.normalize());scene.add(mesh);
+  appleContrails.push({mesh,born:performance.now()});
+  if(appleContrails.length>180){const old=appleContrails.shift();scene.remove(old.mesh);old.mesh.material.dispose();}
+}
+function updateAppleContrails(now) {
+  for(let i=appleContrails.length-1;i>=0;i--){const t=appleContrails[i],age=(now-t.born)/240;
+    if(age>=1){scene.remove(t.mesh);t.mesh.material.dispose();appleContrails.splice(i,1);}
+    else {t.mesh.material.opacity=.95*(1-age);t.mesh.scale.x=t.mesh.scale.z=1-age*.65;}
+  }
+}
+
 function updateApples(now) {
+  updateAppleContrails(now);
+  poseAppleArms(appleThirdArms,appleJabAmount(now,appleJabL),appleJabAmount(now,appleJabR),current.kind==='applebee'&&!dead&&!isFirstPerson());
   if (appleReload > 0 && now >= appleReload) {
     appleAmmo = current.apples || 5;
     appleReload = 0;
@@ -4678,10 +4826,13 @@ function updateApples(now) {
     const f = appleFx[i];
     const t = (now - f.t0) / 130;
     if (t >= 1) {
+      if(f.kind==="apple")appleContrail(f.sp.position,f.to);
       scene.remove(f.sp);
       appleFx.splice(i, 1);
     } else {
+      const previous=f.sp.position.clone();
       f.sp.position.lerpVectors(f.from, f.to, t);
+      if(f.kind==="apple")appleContrail(previous,f.sp.position);
       if (f.kind === "apple") addAppleTrailPuff(f.sp.position, new THREE.Vector3().subVectors(f.to, f.from));
     }
   }
@@ -4753,6 +4904,33 @@ function playExplosionSound(pos) {
   noise.start(t); noise.stop(t + 0.65);
   tone(100, 28, 0.5, "sine", volume, 0);
 }
+// Short procedural cues: each ability has a distinct pitch/envelope, with distance falloff.
+const abilitySoundTimes = new Map();
+function playAbilitySound(kind, pos, key = '') {
+  if(!playing) return;
+  const now=performance.now(), token=kind+':'+key;
+  if(now-(abilitySoundTimes.get(token)??-Infinity)<80)return;
+  abilitySoundTimes.set(token,now);
+  const distance=pos?player.position.distanceTo(pos):0;
+  if(distance>55)return;
+  const volume=.12*Math.pow(1-distance/55,2);
+  const preset={phone:[740,280,.11,'triangle'],dash:[160,720,.22,'sawtooth'],throw:[320,90,.22,'triangle'],
+    shield:[320,640,.25,'sine'],melee:[190,55,.24,'sawtooth'],mine:[900,450,.13,'square'],
+    beam:[240,180,.22,'sine'],blast:[130,45,.24,'sawtooth'],sprint:[180,360,.15,'triangle'],
+    transform:[110,440,.5,'sawtooth'],burst:[90,390,.4,'triangle'],field:[360,65,.5,'sawtooth'],
+    pulse:[240,110,.14,'sine'],honey:[540,900,.25,'sine'],ult:[110,880,.75,'triangle'],
+    beast:[90,35,.7,'sawtooth'],laser:[950,110,.4,'sawtooth'],recall:[680,170,.35,'triangle'],orb:[180,90,.12,'sine']}[kind];
+  if(!preset)return;
+  tone(preset[0],preset[1],preset[2],preset[3],volume,0);
+  if(kind==='ult'||kind==='beast'||kind==='transform')tone(preset[0]*1.5,preset[1]*1.5,preset[2],'sine',volume*.6,.08);
+}
+let soundShieldUp=false, soundSprint=false;
+function updateAbilitySounds() {
+  if(shieldUp&&!soundShieldUp)playAbilitySound('shield');
+  if(landSprinting&&!soundSprint)playAbilitySound('sprint');
+  soundShieldUp=shieldUp;soundSprint=landSprinting;
+}
+
 function tone(freq, freq2, dur, type, vol, delay) {
   const ac = getAudio();
   if (!ac) return;
@@ -4863,7 +5041,7 @@ const ICON = {
   mine: '<circle cx="12" cy="13" r="4.5"/><path d="M12 3v3M12 20v3M3 13h3M18 13h3M6 7l2 2M16 17l2 2M18 7l-2 2M8 17l-2 2"/>',
   hive: '<ellipse cx="12" cy="7" rx="4" ry="2.5"/><ellipse cx="12" cy="12" rx="6" ry="3"/><ellipse cx="12" cy="17.5" rx="5" ry="3"/>',
   bee: '<ellipse cx="12" cy="14" rx="5" ry="6"/><path d="M7 6c-3-3-5 2-2 4M17 6c3-3 5 2 2 4M9 11h6M9 15h6"/>',
-  honey: '<path d="M12 3l7 9-7 9-7-9z"/><path d="M12 3v20"/>',
+  honey: '<path d="M12 3l7 9-7 9-7-9z"/><path d="M12 3v21"/>',
   sun: '<circle cx="12" cy="12" r="5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
   camera: '<path d="M3 8h4l2-3h6l2 3h4v11H3z"/><circle cx="12" cy="13" r="3.5"/>',
   wheel: '<rect x="7" y="2" width="10" height="20" rx="5"/><path d="M12 6v4"/>',
@@ -4876,7 +5054,7 @@ function abilityDefs() {
       accent: "#65c9ff",
       tiles: [
         { key: "LEFT CLICK", name: cleetusMode ? "Life Orbs" : "Phone Beam", icon: ICON.phones, badge: () => cleetusMode ? "7 DPS + HEAL" : "20m" },
-        { key: "RIGHT CLICK", name: "Phone Blast", icon: ICON.phones, cd: () => [lastLandBlast, current.blastCooldown], badge: () => "52" },
+        { key: "RIGHT CLICK", name: cleetusMode ? "Stun Orb" : "Phone Blast", icon: ICON.phones, cd: () => cleetusMode ? [lastCleetusBurst, 10000] : [lastLandBlast, current.blastCooldown], badge: () => cleetusMode ? "5m / 20 DPS" : "52" },
         { key: "SHIFT", name: "Desk Sprint", icon: ICON.dash, badge: () => landSprinting ? "SPRINTING" : "1.5×" },
       ],
       ultIcon: ICON.sun,
@@ -4929,11 +5107,13 @@ function useHoney() {
   const now = performance.now();
   if (now - lastHoney < HONEY.cooldown || honeyChoiceUntil > now) return;
   lastHoney = now;
+  playAbilitySound("honey");
   honeyChoiceUntil = now + HONEY.chooseMs;
   honeyChoice.style.display = "block";
 }
 
 function resolveHoney(pick) {
+  if(honeyChoiceUntil)playAbilitySound("honey");
   honeyChoiceUntil = 0;
   honeyChoice.style.display = "none";
   if (pick === "apple") {
@@ -5201,6 +5381,7 @@ function animate() {
   landSprinting = current.kind === "land" && playing && !dead && !paused &&
     (keys.ShiftLeft || keys.ShiftRight) &&
     now >= holdUntil && now >= landStunUntil;
+  updateAbilitySounds();
   localDesk.visible = !!landSprinting;
   localDesk.position.set(player.position.x, player.position.y - 1, player.position.z);
   localDesk.rotation.y = yaw;
@@ -5219,7 +5400,7 @@ function animate() {
     // Dash glide + red trail
     if (dashFrames > 0) {
       dashFrames--;
-      player.position.addScaledVector(dashDir, current.dashDistance / DASH_FRAMES);
+      moveDashSafely(current.dashDistance / DASH_FRAMES);
       addTrailPuff({
         x: player.position.x - dashDir.x * 0.6,
         z: player.position.z - dashDir.z * 0.6,
@@ -5233,6 +5414,7 @@ function animate() {
     if (mouseHeld && (current.kind !== "land" || cleetusMode)) tryShoot();
   }
   pushOutOfWalls(player.position, player.position.y - 1, STEP_HEIGHT);
+  constrainPlayer();
   physicsStep(dt, playing && !dead && !paused && ultPhase === 0 && now >= holdUntil && now >= landStunUntil);
   if (now < holdUntil) {
     player.position.lerp(holdPos, 0.6);
@@ -5247,6 +5429,7 @@ function animate() {
   updateLandBeam(dt, now);
   updateLandBlastFx(now);
   if (now >= landStunUntil) checkPads(now);
+  constrainPlayer();
   player.rotation.y = yaw;
   localDesk.position.set(player.position.x, player.position.y - 1, player.position.z);
 
@@ -5323,17 +5506,17 @@ function animate() {
   // Phone / apple in hand: Mahoney gets a recoil + toss, Applebee gets a sharp knife-style flick
   viewKick *= 0.8;
   throwAnim *= 0.88;
-  appleThrowAnimL *= 0.8;
-  appleThrowAnimR *= 0.8;
+  appleThrowAnimL = appleJabAmount(now,appleJabL);
+  appleThrowAnimR = appleJabAmount(now,appleJabR);
   if (current.kind === "applebee") {
     viewPhoneImg.visible = false; // no apple glued to her hand - just the 5 on the holster
-    const snapL = appleThrowAnimL * appleThrowAnimL; // sharp out, smooth back - the Jett-knife flick
-    const snapR = appleThrowAnimR * appleThrowAnimR;
+    const snapL = appleThrowAnimL; // sharp out, smooth back - the Jett-knife flick
+    const snapR = appleThrowAnimR;
     // only the hand that matches the thrown apple's side moves (both for the middle apple)
-    viewPhone.position.set(PHONE_VIEW.x + snapR * 0.6, PHONE_VIEW.y + snapR * 0.25, PHONE_VIEW.z - snapR * 0.7);
-    viewPhone.rotation.set(-snapR * 1.15, -snapR * 0.95, snapR * 0.55);
-    viewPhoneL.position.set(-PHONE_VIEW.x - snapL * 0.6, PHONE_VIEW.y + snapL * 0.25, PHONE_VIEW.z - snapL * 0.7);
-    viewPhoneL.rotation.set(-snapL * 1.15, snapL * 0.95, -snapL * 0.55);
+    viewPhone.position.set(PHONE_VIEW.x - snapR * 0.18, PHONE_VIEW.y + snapR * 0.12, PHONE_VIEW.z - snapR * 0.65);
+    viewPhone.rotation.set(-snapR * 0.15, -snapR * 0.18, snapR * 0.08);
+    viewPhoneL.position.set(-PHONE_VIEW.x + snapL * 0.18, PHONE_VIEW.y + snapL * 0.12, PHONE_VIEW.z - snapL * 0.65);
+    viewPhoneL.rotation.set(-snapL * 0.15, snapL * 0.18, -snapL * 0.08);
   } else {
     viewPhoneImg.visible = true;
     viewPhone.position.set(
@@ -5489,6 +5672,7 @@ function animate() {
   }
 
   updateCleetusOrbsLocal(dt);
+  updateCleetusFields(dt, now);
   updateCleetusOverlay();
   updateAbilityBar(now);
   updateSideKeys();
