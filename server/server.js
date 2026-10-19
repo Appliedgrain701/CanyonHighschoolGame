@@ -2,7 +2,7 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const SERVER_VERSION = 15; // protocol version; differing versions do not imply a stale deployment
+const SERVER_VERSION = 16; // protocol version; differing versions do not imply a stale deployment
 // Shared arena dimensions: keep game.js and server.js in sync.
 const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
 const PORT = process.env.PORT || 3000;
@@ -437,12 +437,12 @@ wss.on("connection", (ws) => {
 // Collision map mirrors game.js; update both when editing arena geometry.
 const walls = [
   // cover (equipment and benches)
-  { x: -10, z: -22, w: 5, d: 2, h: 3, color: 0x1a2a6c },
-  { x: 10, z: -22, w: 5, d: 2, h: 3, color: 0x1a2a6c },
-  { x: -10, z: 22, w: 5, d: 2, h: 3, color: 0x1a2a6c },
-  { x: 10, z: 22, w: 5, d: 2, h: 3, color: 0x1a2a6c },
-  { x: -14, z: 0, w: 2, d: 6, h: 3, color: 0x888888 },
-  { x: 14, z: 0, w: 2, d: 6, h: 3, color: 0x888888 },
+  { x: -10, z: -22, w: 5, d: 2, h: 3, color: 0xb5122a },
+  { x: 10, z: -22, w: 5, d: 2, h: 3, color: 0xb5122a },
+  { x: -10, z: 22, w: 5, d: 2, h: 3, color: 0xb5122a },
+  { x: 10, z: 22, w: 5, d: 2, h: 3, color: 0xb5122a },
+  { x: -14, z: 0, w: 2, d: 6, h: 3, color: 0x24262b },
+  { x: 14, z: 0, w: 2, d: 6, h: 3, color: 0x24262b },
 ];
 
 // ===== walkable bleachers, announcer room, stairs =====
@@ -451,7 +451,7 @@ const bleacherStart = walls.length;
 for (const side of [-1, 1]) {
   for (let i = 0; i < 8; i++) {
     const top = 0.5 * (i + 1);
-    walls.push({ x: side * (24.8 + i * 1.6), z: 0, w: 1.6, d: 60, y0: i < 4 ? 0 : top - 0.3, h: top, color: i % 2 ? 0x7b858f : 0x9aa3ad });
+    walls.push({ x: side * (24.8 + i * 1.6), z: 0, w: 1.6, d: 60, y0: i < 4 ? 0 : top - 0.3, h: top, color: i % 2 ? 0xb5122a : 0xd9dde0 });
   }
   walls.push({ x: side * 37, z: 0, w: 0.4, d: 60, h: 4.6, color: 0x555555 });
 }
@@ -478,6 +478,59 @@ walls.push(
   { x: -MAP.halfX, z: 0, w: 1, d: MAP.halfZ * 2, h: 3, color: 0x444444 },
   { x: MAP.halfX, z: 0, w: 1, d: MAP.halfZ * 2, h: 3, color: 0x444444 }
 );
+
+// ================= CANYON COUGARS STADIUM PROPS =================
+// Every solid piece goes through walls, so movement and attack collision agree.
+function stadiumBlock(x, z, w, d, y0, h, color) {
+  walls.push({ x, z, w, d, y0, h, color });
+}
+const concession = { x: 54, z: -49 };
+// Concession booth: counter, serving window, back wall and striped canopy.
+stadiumBlock(54, -52.8, 14, 0.4, 0, 4, 0xb5122a);
+stadiumBlock(47.2, -49, 0.4, 8, 0, 4, 0xb5122a);
+stadiumBlock(60.8, -49, 0.4, 8, 0, 4, 0xb5122a);
+stadiumBlock(54, -45.2, 14, 0.4, 0, 1.15, 0xb5122a);
+stadiumBlock(54, -44.9, 14.6, 1.1, 1.15, 1.3, 0xe6e7e9);
+stadiumBlock(54, -45.2, 14, 0.4, 3, 4, 0x202126);
+stadiumBlock(54, -49, 15, 9, 4, 4.25, 0x202126);
+for (let stripe = 0; stripe < 14; stripe++) {
+  stadiumBlock(47.5 + stripe, -44.4, 1, 2.2, 3, 3.15, stripe % 2 ? 0xffffff : 0xb5122a);
+}
+// Picnic tables: jumpable tabletop and two low benches.
+const picnicSpots = [[53, -36], [65, -36], [63, 35]];
+for (const [x, z] of picnicSpots) {
+  stadiumBlock(x, z, 4, 1.5, 0.9, 1.1, 0xb5122a);
+  for (const side of [-1, 1]) {
+    stadiumBlock(x, z + side * 1.25, 4, 0.5, 0.4, 0.55, 0xd9dde0);
+    stadiumBlock(x + side * 1.3, z, 0.18, 2.8, 0, 0.9, 0x292b30);
+  }
+}
+// Sideline benches and water coolers, entirely inside the track's inner edge.
+const sidelineSpots = [[22.5, -23], [-22.5, 23]];
+for (const [x, z] of sidelineSpots) {
+  stadiumBlock(x, z, 1.2, 7, 0.5, 0.7, 0xd9dde0);
+  stadiumBlock(x + Math.sign(x) * 0.5, z, 0.15, 7, 0.7, 1.45, 0xb5122a);
+  for (const dz of [-2.6, 2.6]) stadiumBlock(x, z + dz, 0.8, 0.15, 0, 0.5, 0x292b30);
+  stadiumBlock(x, z + 4.8, 1.2, 1.2, 0, 1.25, 0xb5122a);
+}
+// Blocking sleds / padded tackling stations; players can flank each end.
+const sledSpots = [[-19, -9], [19, 9], [-48, 43], [48, 43]];
+for (const [x, z] of sledSpots) {
+  stadiumBlock(x, z, 3.8, 2, 0, 0.2, 0x24262b);
+  for (const dx of [-1.2, 0, 1.2]) {
+    stadiumBlock(x + dx, z, 0.22, 0.25, 0.2, 1, 0xd9dde0);
+    stadiumBlock(x + dx, z, 0.8, 0.65, 0.7, 2.1, 0xb5122a);
+  }
+}
+const crateSpots = [[-51, -43], [-55, -43], [48, 55], [52, 55], [-48, 55]];
+for (const [x, z] of crateSpots) stadiumBlock(x, z, 2.8, 2.4, 0, 1.7, 0x373a40);
+// North-end stadium board, outside the oval. No false live score display.
+for (const x of [-5.5, 5.5]) stadiumBlock(x, -84, 0.5, 0.5, 0, 8, 0x292b30);
+stadiumBlock(0, -84, 17, 0.8, 5.5, 10.5, 0x202126);
+// Banner uprights beyond the bleacher ends.
+for (const side of [-1, 1]) for (const z of [-34, 34]) {
+  stadiumBlock(side * 46, z, 0.18, 0.18, 0, 6, 0xd9dde0);
+}
 
 const wallBoxes = walls.map(w => ({ minX: w.x-w.w/2, maxX: w.x+w.w/2, minZ: w.z-w.d/2, maxZ: w.z+w.d/2, y0: w.y0 || 0, h: w.h || 6 }));
 function landLineClear(a, b) {
