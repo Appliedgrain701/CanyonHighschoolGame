@@ -386,19 +386,11 @@ const characters = {
     picture: "mrland.png",
     health: 225,
     speed: 0.15,
-    fireDelay: 100,
-    damage: 20,
-    burst: 1,
-    spread: 0,
-    landPhoneCooldown: 7000,
-    ultCost: 100,
-    ultStartCharge: 0,
-    ultPassivePerSec: 0.7,
-    ultPerDamage: 0.07,
-    ultPerKill: 8,
-    ultBeams: 3,
+    // No abilities yet except the red primary beam below.
+    ultCost: 100, ultStartCharge: 0, ultPassivePerSec: 0,
+    ultPerDamage: 0, ultPerKill: 0,
   },
-  // Same character kit, alternate appearance used by Mr. Land's X ability.
+  // Texture registration only; Cleetus has no separate selection or transformation yet.
   cleetus: {
     name: "Cleetus",
     kind: "land",
@@ -406,17 +398,8 @@ const characters = {
     picture: "cleetus.png",
     health: 225,
     speed: 0.15,
-    fireDelay: 100,
-    damage: 20,
-    burst: 1,
-    spread: 0,
-    landPhoneCooldown: 7000,
-    ultCost: 100,
-    ultStartCharge: 0,
-    ultPassivePerSec: 0.7,
-    ultPerDamage: 0.07,
-    ultPerKill: 8,
-    ultBeams: 3,
+    ultCost: 100, ultStartCharge: 0, ultPassivePerSec: 0,
+    ultPerDamage: 0, ultPerKill: 0,
   },
   applebee: {
     name: "Ms. Applebee",
@@ -500,10 +483,6 @@ let maxHealth = current.health;
 let playerHealth = maxHealth;
 let speed = current.speed;
 let lastShot = -99999;
-let lastLandPhone = -99999;
-let landForm = "land";
-let landSprintUntil = 0;
-let landStunnedUntil = 0;
 let lastDash = -99999;
 let lastGrenade = -99999;
 let lastMelee = -99999;
@@ -576,25 +555,6 @@ const BODY_HEIGHT = 2.2; // height of the cutout picture
 const bodySprite = new THREE.Sprite(new THREE.SpriteMaterial({ alphaTest: 0.05 }));
 bodySprite.visible = false;
 player.add(bodySprite);
-
-// Simple rolling standing-desk prop shown while Shift sprint is held.
-const landDesk = new THREE.Group();
-const deskTop = new THREE.Mesh(new THREE.BoxGeometry(1.45, 0.1, 0.72), new THREE.MeshStandardMaterial({ color: 0x343b43, roughness: 0.7 }));
-deskTop.position.set(0, -0.28, -0.88);
-landDesk.add(deskTop);
-const deskStem = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.62, 0.12), new THREE.MeshStandardMaterial({ color: 0x8c949b, metalness: 0.45, roughness: 0.4 }));
-deskStem.position.set(0, -0.62, -0.88);
-landDesk.add(deskStem);
-const deskBase = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.08, 0.38), new THREE.MeshStandardMaterial({ color: 0x59616a, metalness: 0.35 }));
-deskBase.position.set(0, -0.94, -0.88);
-landDesk.add(deskBase);
-for (const wx of [-0.34, 0.34]) for (const wz of [-0.12, 0.12]) {
-  const wheel = new THREE.Mesh(new THREE.SphereGeometry(0.075, 8, 8), new THREE.MeshStandardMaterial({ color: 0x15171a, roughness: 0.9 }));
-  wheel.position.set(wx, -1.02, -0.88 + wz);
-  landDesk.add(wheel);
-}
-landDesk.visible = false;
-player.add(landDesk);
 
 // Swaps the purple box for a cutout picture, if the picture exists
 function loadBodyPicture(file) {
@@ -1471,7 +1431,7 @@ function makeCard(locked) {
 }
 
 for (const key in characters) {
-  // Cleetus is Mr. Land's X transformation, not a separate selectable teacher.
+  // Cleetus is texture-only for now, not a second selectable teacher.
   if (key === "cleetus") continue;
   const c = characters[key];
   const hex = "#" + c.color.toString(16).padStart(6, "0");
@@ -1551,14 +1511,13 @@ function selectCharacter(key) {
   lastAttacker = null;
 
   current = characters[key];
-  landForm = "land";
   player.material.color.setHex(current.color);
   loadBodyPicture(current.picture);
   maxHealth = current.health;
   playerHealth = maxHealth;
   speed = current.speed;
   lastShot = lastDash = lastGrenade = lastMelee = -99999;
-  lastLandPhone = landDamageTick = -99999;
+  landDamageTick = -99999;
   mouseHeld = false;
   stopLandBeam();
   resetApples();
@@ -1671,11 +1630,6 @@ function damagePlayer(amount, attacker) {
 const keys = {};
 addEventListener("keydown", (e) => {
   keys[e.code] = true;
-  // Hold either Shift key to ride the rolling standing desk for a speed boost.
-  if ((e.code === "ShiftLeft" || e.code === "ShiftRight") && current.kind === "land") {
-    landSprintUntil = performance.now() + 150;
-  }
-
   // Esc closes the pause menu (ignored for a moment so the Esc that opened it doesn't close it)
   if (
     e.code === "Escape" &&
@@ -1708,16 +1662,15 @@ addEventListener("keydown", (e) => {
   if (e.code === "Backquote" && !e.repeat && playing) startVoice();
 
   if (!playing || dead || paused || ultPhase !== 0 || e.repeat || performance.now() < holdUntil) return;
+  // Mr. Land and Cleetus are primary-beam-only while being developed.
+  if (current.kind === "land") return;
   if (e.code === "KeyQ") {
-    if (current.kind !== "applebee" && current.kind !== "land") dash();
-    else if (current.kind === "applebee") useHoney();
+    if (current.kind !== "applebee") dash();
+    else useHoney();
   }
   if (e.code === "KeyE") throwGrenade();
   if (e.code === "KeyV") melee();
-  if (e.code === "KeyX") {
-    if (current.kind === "land") switchLandForm();
-    else startUlt();
-  }
+  if (e.code === "KeyX") startUlt();
 });
 addEventListener("keyup", (e) => {
   keys[e.code] = false;
@@ -1752,7 +1705,7 @@ addEventListener("mousemove", (e) => {
   }
 });
 
-// Left click = primary attack (Mr. Land auto-locks and streams phones only at targets).
+// Left click: Mr. Land uses a red, target-required tracking beam (no other abilities yet).
 addEventListener("mousedown", (e) => {
   if (!playing || dead || paused || !document.pointerLockElement) return;
   if (current.kind === "applebee" && honeyChoiceUntil > performance.now()) {
@@ -1761,10 +1714,7 @@ addEventListener("mousedown", (e) => {
     return;
   }
   if (e.button === 2) {
-    if (current.kind === "land") {
-      fireLandPhone();
-      return;
-    }
+    if (current.kind === "land") return; // Right-click has no action yet.
     if (current.kind === "applebee") {
       fireBeeGun();
       return;
@@ -2564,24 +2514,6 @@ function handleNet(m) {
       updateStats();
       break;
     }
-    case "form": {
-      const r = remotes.get(m.id);
-      if (r && (m.char === "land" || m.char === "cleetus")) setRemoteChar(r, m.char);
-      break;
-    }
-    case "landhit": {
-      if (m.id === net.id) {
-        if (Number.isFinite(m.x) && Number.isFinite(m.z)) player.position.set(m.x, 1, m.z);
-        landStunnedUntil = performance.now() + Math.max(0, Math.min(1500, Number(m.ms) || 1000));
-        addFeedText("Big Phone stun!");
-      } else {
-        const r = remotes.get(m.id);
-        if (r && Number.isFinite(m.x) && Number.isFinite(m.z)) {
-          r.tx = m.x; r.tz = m.z; r.mesh.position.x = m.x; r.mesh.position.z = m.z;
-        }
-      }
-      break;
-    }
     case "respawn": {
       if (m.id === net.id) {
         player.position.set(m.x, 1, m.z);
@@ -2682,12 +2614,10 @@ function handleFx(m) {
     addZone(a[0], a[1], a[2], a[3], a[4], false);
     boomAt(new THREE.Vector3(a[0], a[1] + 0.5, a[2]), a[3], 0xffd23f);
   } else if (m.k === "lt" && a.length >= 6) {
-    showRemoteLandStream(m.id, new THREE.Vector3(a[3], a[4], a[5]));
-  } else if (m.k === "lb" && a.length >= 6) {
-    // Another Mr. Land's big phone. Effects are visual; their server applies damage.
-    spawnLandBigPhone(new THREE.Vector3(a[0], a[1], a[2]),
-      new THREE.Vector3(a[3], a[4], a[5]), null, true);
+    // Only a visible, target-locked beam gets broadcast from its owner.
+    showRemoteLandBeam(m.id, new THREE.Vector3(a[3], a[4], a[5]));
   }
+
 }
 
 // ================= MR. MAHONEY: PHONE BURST =================
@@ -2747,162 +2677,161 @@ function aimDirection(eye) {
   return dir.normalize();
 }
 
-// Mr. Land / Cleetus form switch. X is the ultimate; Shift is reserved for desk sprint.
-function switchLandForm() {
-  if (!playing || dead || paused || current.kind !== "land") return;
-  landForm = landForm === "land" ? "cleetus" : "land";
-  loadBodyPicture(landForm === "land" ? "mrland.png" : "cleetus.png");
-  hpName.textContent = myName.toUpperCase() + "  ·  " + (landForm === "land" ? "MR. LAND" : "CLEETUS");
-  addFeedText("Switched to " + (landForm === "land" ? "Mr. Land" : "Cleetus") + " — UNDER DEVELOPMENT");
-  // Tell the multiplayer server which appearance other players should render.
-  // The server must accept the `cleetus` character key for this to sync online.
-  if (mode === "online" && net && net.ready) {
-    netSend({ t: "form", char: landForm === "land" ? "land" : "cleetus" });
-  }
-}
-
-// Scarlet Witch-style soft lock: enemies must be within 10 world units,
-// unobstructed, AND close to the center of the player's aim. The target stays
-// locked while it remains in that aim field instead of flickering every frame.
-const LAND_RANGE = 10;
-const LAND_LOCK_RADIUS = 2.6; // world units around the crosshair's aim ray
-const LAND_TICK_MS = 100;
-const LAND_TICK_DAMAGE = 2; // 2 damage / 0.1 seconds = 20 damage per second
+// ================= MR. LAND: RED AUTO-TRACKING PRIMARY =================
+// Inspired by Scarlet Witch's Chaos Control: a short-range continuous beam
+// that tracks one living enemy in a generous aim cylinder around the crosshair.
+// Nothing is rendered or damaged without a valid visible player / bot.
+const LAND_RANGE = 10;             // max world-unit distance from Mr. Land
+const LAND_AIM_RADIUS = 3.0;       // target must be this near the crosshair ray
+const LAND_TICK_MS = 100;          // one damage tick every 0.1 seconds
+const LAND_TICK_DAMAGE = 2;        // exactly 20 damage per second while tracking
 let landDamageTick = -99999;
 let landLockedEntity = null;
 let landFxAt = -99999;
 
-function nearestLandTarget(maxRange = LAND_RANGE, aimAssist = false) {
+function nearestLandTarget() {
+  const eye = camera.getWorldPosition(new THREE.Vector3());
+  const view = camera.getWorldDirection(new THREE.Vector3()).normalize();
   let best = null;
   let bestScore = Infinity;
-  const eye = camera.getWorldPosition(new THREE.Vector3());
-  const look = camera.getWorldDirection(new THREE.Vector3()).normalize();
   const consider = (entity, type) => {
-    if (!entity.alive || !entity.mesh || !entity.mesh.position) return;
+    if (!entity.alive || !entity.mesh || !entity.mesh.visible) return;
     const pos = entity.mesh.position;
-    const fromPlayer = new THREE.Vector3().subVectors(pos, player.position);
-    const range = fromPlayer.length();
-    if (range > maxRange || range < 0.01) return;
+    const range = player.position.distanceTo(pos);
+    if (range > LAND_RANGE || range < 0.05) return;
     if (!hasLineOfSight(player.position, pos)) return;
-    let perpendicular = 0;
-    if (aimAssist) {
-      const towards = new THREE.Vector3().subVectors(pos, eye);
-      const distanceAlongAim = towards.dot(look);
-      if (distanceAlongAim <= 0) return; // never lock behind the camera
-      perpendicular = Math.sqrt(Math.max(0, towards.lengthSq() - distanceAlongAim * distanceAlongAim));
-      if (perpendicular > LAND_LOCK_RADIUS) return; // must aim roughly at an enemy
-    }
-    // Prefer the player nearest the crosshair; keep an existing valid lock.
-    const score = aimAssist
-      ? perpendicular + range * 0.035 - (entity === landLockedEntity ? 0.85 : 0)
-      : range;
+    const delta = pos.clone().sub(eye);
+    const along = delta.dot(view);
+    if (along <= 0 || along > LAND_RANGE + camDist + 3) return;
+    const offset = Math.sqrt(Math.max(0, delta.lengthSq() - along * along));
+    if (offset > LAND_AIM_RADIUS) return;
+    // Aim near the target, and keep the previous lock stable while it is valid.
+    const score = offset + range * 0.025 - (entity === landLockedEntity ? 0.65 : 0);
     if (score < bestScore) {
       bestScore = score;
-      best = { entity, type, distance: range };
+      best = { entity, type };
     }
   };
   if (mode === "bots") for (const bot of bots) consider(bot, "bot");
-  if (mode === "online") for (const remote of remotes.values()) consider(remote, "remote");
+  if (mode === "online") for (const r of remotes.values()) consider(r, "remote");
   return best;
 }
 
-// A continuous STREAM OF PHONES rather than a normal projectile gun or a
-// glowing laser line. The moving phones bend and follow a living target.
-const landBeam = new THREE.Group();
-const landBeamPhones = [];
-for (let i = 0; i < 18; i++) {
-  const phone = new THREE.Mesh(phoneGeo, phoneMat);
-  phone.renderOrder = 16;
-  landBeam.add(phone);
-  landBeamPhones.push(phone);
+// Glow layers make this look like a red energy tether, not a projectile gun.
+function makeLandBeamVisual() {
+  const group = new THREE.Group();
+  const createLayer = (radius, color, opacity) => {
+    const mesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(radius, radius, 1, 10, 1, true),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity,
+        depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide })
+    );
+    mesh.renderOrder = 12;
+    group.add(mesh);
+    return mesh;
+  };
+  const segments = Array.from({ length: 6 }, () => ({
+    outer: createLayer(0.16, 0xff112c, 0.24),
+    middle: createLayer(0.085, 0xff1642, 0.68),
+    core: createLayer(0.03, 0xffd6d6, 0.95),
+  }));
+  const impact = new THREE.Mesh(
+    new THREE.SphereGeometry(0.20, 10, 8),
+    new THREE.MeshBasicMaterial({ color: 0xff284c, transparent: true, opacity: 0.85,
+      blending: THREE.AdditiveBlending, depthWrite: false })
+  );
+  group.add(impact);
+  group.visible = false;
+  scene.add(group);
+  return { group, segments, impact };
 }
-landBeam.visible = false;
-scene.add(landBeam);
-const landLockHud = document.createElement("div");
-landLockHud.style.cssText = "position:fixed;left:50%;top:57%;transform:translateX(-50%);" +
-  "font:bold 14px sans-serif;letter-spacing:1px;color:#86f8ff;text-shadow:0 1px 5px #000;" +
-  "pointer-events:none;z-index:5;display:none;white-space:nowrap";
-document.body.appendChild(landLockHud);
 
-function positionLandPhoneStream(phones, origin, end, now) {
-  const delta = new THREE.Vector3().subVectors(end, origin);
-  const horizontal = new THREE.Vector3(-delta.z, 0, delta.x).normalize();
-  for (let i = 0; i < phones.length; i++) {
-    const phone = phones[i];
-    // Every phone slides down the curved connection toward the tracked target.
-    const t = 0.04 + 0.94 * (((i / phones.length) + now / 520) % 1);
-    const bend = Math.sin(Math.PI * t) * Math.sin(now / 145 + i * 0.7) * 0.14;
-    phone.position.copy(origin).addScaledVector(delta, t).addScaledVector(horizontal, bend);
-    phone.quaternion.copy(camera.quaternion);
-    phone.rotateZ(now * 0.008 + i * 0.65);
-    const size = 0.37 + Math.sin(now / 95 + i) * 0.045;
-    phone.scale.set(size * phoneAspect, size, 1);
+const landBeam = makeLandBeamVisual();
+const remoteLandBeams = new Map();
+const beamUp = new THREE.Vector3(0, 1, 0);
+function positionLandBeam(effect, origin, target, now) {
+  const diff = target.clone().sub(origin);
+  const sideways = new THREE.Vector3(-diff.z, 0, diff.x);
+  if (sideways.lengthSq() < 0.001) sideways.set(1, 0, 0);
+  sideways.normalize();
+  const points = [];
+  for (let i = 0; i <= effect.segments.length; i++) {
+    const t = i / effect.segments.length;
+    const jitter = Math.sin(t * Math.PI) * Math.sin(now * 0.014 + t * 11) * 0.075;
+    points.push(origin.clone().lerp(target, t).addScaledVector(sideways, jitter));
   }
+  for (let i = 0; i < effect.segments.length; i++) {
+    const start = points[i], end = points[i + 1];
+    const vec = end.clone().sub(start), length = vec.length();
+    const center = start.clone().add(end).multiplyScalar(0.5);
+    const q = new THREE.Quaternion().setFromUnitVectors(beamUp, vec.normalize());
+    for (const layer of Object.values(effect.segments[i])) {
+      layer.position.copy(center);
+      layer.quaternion.copy(q);
+      layer.scale.set(1, length, 1);
+    }
+  }
+  effect.impact.position.copy(target);
+  const glowSize = 0.85 + Math.sin(now * 0.02) * 0.15;
+  effect.impact.scale.setScalar(glowSize);
+  effect.group.visible = true;
 }
 
-// Network-only visuals of OTHER players' phone beams; they don't apply damage.
-const remoteLandStreams = new Map();
-function showRemoteLandStream(id, destination) {
-  let effect = remoteLandStreams.get(id);
+function stopLandBeam() {
+  landLockedEntity = null;
+  landBeam.group.visible = false;
+  landDamageTick = -99999; // never carry charged damage to a newly acquired target
+}
+
+function showRemoteLandBeam(id, destination) {
+  let effect = remoteLandBeams.get(id);
   if (!effect) {
-    const group = new THREE.Group();
-    const phones = [];
-    for (let i = 0; i < 14; i++) {
-      const phone = new THREE.Mesh(phoneGeo, phoneMat);
-      group.add(phone);
-      phones.push(phone);
-    }
-    scene.add(group);
-    effect = { group, phones, end: destination.clone(), last: 0 };
-    remoteLandStreams.set(id, effect);
+    effect = { ...makeLandBeamVisual(), end: destination.clone(), last: 0 };
+    remoteLandBeams.set(id, effect);
   }
   effect.end.copy(destination);
   effect.last = performance.now();
 }
-function updateRemoteLandStreams(now) {
-  for (const [id, effect] of remoteLandStreams) {
-    const r = remotes.get(id);
-    if (!r || !r.alive || now - effect.last > 250) {
+function updateRemoteLandBeams(now) {
+  for (const [id, effect] of remoteLandBeams) {
+    const remote = remotes.get(id);
+    if (!remote || !remote.alive || now - effect.last > 220) {
       scene.remove(effect.group);
-      remoteLandStreams.delete(id);
+      remoteLandBeams.delete(id);
       continue;
     }
-    positionLandPhoneStream(effect.phones,
-      new THREE.Vector3(r.mesh.position.x, r.mesh.position.y + 0.5, r.mesh.position.z),
-      effect.end, now);
+    const source = remote.mesh.position.clone().add(new THREE.Vector3(0, 0.55, 0));
+    positionLandBeam(effect, source, effect.end, now);
   }
-}
-function stopLandBeam() {
-  landLockedEntity = null;
-  landBeam.visible = false;
-  landLockHud.style.display = "none";
 }
 
 function landAutoAimAttack() {
   if (!playing || dead || paused || current.kind !== "land" || !mouseHeld ||
-      !document.pointerLockElement || ultPhase !== 0) {
+      !document.pointerLockElement || ultPhase !== 0 || performance.now() < holdUntil) {
     stopLandBeam();
     return;
   }
-
-  // Holding left click does not produce any phones without a valid target.
-  const target = nearestLandTarget(LAND_RANGE, true);
+  const target = nearestLandTarget();
   if (!target) {
-    stopLandBeam();
+    stopLandBeam(); // no player / bot -> no red beam, no shooting, no damage
     return;
   }
-
-  landLockedEntity = target.entity;
   const now = performance.now();
-  const origin = new THREE.Vector3(player.position.x, player.position.y + 0.55, player.position.z);
-  const end = target.entity.mesh.position.clone().add(new THREE.Vector3(0, 0.2, 0));
-  landBeam.visible = true;
-  landLockHud.style.display = "block";
-  landLockHud.textContent = "TRACKING: " + target.entity.name;
-  positionLandPhoneStream(landBeamPhones, origin, end, now);
+  if (landLockedEntity !== target.entity) {
+    landLockedEntity = target.entity;
+    landDamageTick = now; // a new lock starts a new tick interval
+  }
+  const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+  const right = new THREE.Vector3(-forward.z, 0, forward.x);
+  const origin = firstPerson
+    ? camera.getWorldPosition(new THREE.Vector3()).addScaledVector(
+        camera.getWorldDirection(new THREE.Vector3()), 0.55)
+    : player.position.clone().add(new THREE.Vector3(0, 0.55, 0))
+        .addScaledVector(right, 0.32).addScaledVector(forward, 0.35);
+  const end = target.entity.mesh.position.clone().add(new THREE.Vector3(0, 0.30, 0));
+  positionLandBeam(landBeam, origin, end, now);
 
-  // Show other online players the same stream, without broadcasting when idle.
-  if (mode === "online" && now - landFxAt >= 100) {
+  if (mode === "online" && now - landFxAt >= 90) {
     landFxAt = now;
     netFx("lt", [origin.x, origin.y, origin.z, end.x, end.y, end.z]);
   }
@@ -2912,75 +2841,6 @@ function landAutoAimAttack() {
     damageBot(target.entity, LAND_TICK_DAMAGE, "land", "player");
   } else if (mode === "online") {
     netSend({ t: "hit", target: target.entity.id, k: "landphone" });
-  }
-}
-
-// A real, animated oversized phone flying toward the auto-locked target.
-// Hits on impact, and the server handles online health, knockback and stun.
-const landPhoneFx = [];
-function spawnLandBigPhone(start, destination, target = null, visualOnly = false) {
-  const phone = new THREE.Mesh(phoneGeo, phoneMat);
-  phone.scale.set(2.5 * phoneAspect, 2.5, 1);
-  phone.position.copy(start);
-  phone.renderOrder = 17;
-  scene.add(phone);
-  landPhoneFx.push({ phone, start: start.clone(), end: destination.clone(),
-    target, visualOnly, started: performance.now(), duration: 420 });
-}
-
-function fireLandPhone() {
-  if (!playing || dead || paused || current.kind !== "land" || ultPhase !== 0) return;
-  const now = performance.now();
-  if (now - lastLandPhone < current.landPhoneCooldown) return;
-  const target = nearestLandTarget(LAND_RANGE);
-  if (!target) {
-    addFeedText("Big Phone: find a target within 10m first (still ready)");
-    return; // Do not start cooldown or spawn a pointless phone.
-  }
-  lastLandPhone = now;
-  throwAnim = 1;
-  viewKick = 1;
-  const start = new THREE.Vector3(player.position.x, player.position.y + 0.6, player.position.z);
-  const end = target.entity.mesh.position.clone().add(new THREE.Vector3(0, 0.2, 0));
-  spawnLandBigPhone(start, end, target, false);
-  netFx("lb", [start.x, start.y, start.z, end.x, end.y, end.z]);
-  addFeedText("BIG PHONE → " + target.entity.name);
-}
-
-function updateLandBigPhones(now) {
-  for (let i = landPhoneFx.length - 1; i >= 0; i--) {
-    const shot = landPhoneFx[i];
-    const progress = Math.min(1, (now - shot.started) / shot.duration);
-    if (shot.target && shot.target.entity.alive)
-      shot.end.copy(shot.target.entity.mesh.position).add(new THREE.Vector3(0, 0.2, 0));
-    shot.phone.position.lerpVectors(shot.start, shot.end, progress);
-    shot.phone.position.y += Math.sin(progress * Math.PI) * 0.45;
-    shot.phone.quaternion.copy(camera.quaternion);
-    shot.phone.rotateZ(progress * Math.PI * 3);
-    if (progress < 1) continue;
-    scene.remove(shot.phone);
-    landPhoneFx.splice(i, 1);
-    if (shot.visualOnly || !shot.target || !shot.target.entity.alive) continue;
-    const target = shot.target;
-    // Don't apply damage if the target escaped the 10m range before impact.
-    if (Math.hypot(target.entity.mesh.position.x - player.position.x,
-                   target.entity.mesh.position.z - player.position.z) > LAND_RANGE) continue;
-    if (target.type === "bot") {
-      const pos = target.entity.mesh.position;
-      const dx = pos.x - player.position.x, dz = pos.z - player.position.z;
-      const len = Math.hypot(dx, dz) || 1;
-      damageBot(target.entity, 40, "land", "player");
-      if (target.entity.alive) {
-        pos.x += dx / len * 3;
-        pos.z += dz / len * 3;
-        pos.x = Math.max(-48, Math.min(48, pos.x));
-        pos.z = Math.max(-48, Math.min(48, pos.z));
-        pushOutOfWalls(pos, pos.y - 1, STEP_HEIGHT);
-        target.entity.stunnedUntil = now + 1000;
-      }
-    } else if (mode === "online") {
-      netSend({ t: "hit", target: target.entity.id, k: "landbig" });
-    }
   }
 }
 
@@ -2998,7 +2858,7 @@ function tryShoot() {
   if (!playing || dead || paused || ultPhase !== 0 || shieldUp || meleeStart > 0 || performance.now() < holdUntil) return;
   if (!document.pointerLockElement) return;
   const now = performance.now();
-  if (current.kind === "land") return; // Land is beam-only, never Mahoney's normal burst
+  if (current.kind === "land") return; // primary beam handled exclusively by landAutoAimAttack
   if (now - lastShot < current.fireDelay) return;
   if (current.kind === "applebee") {
     if (appleReload > 0 || appleAmmo <= 0) return;
@@ -3059,6 +2919,7 @@ function spawnGrenade(x, y, z, vx, vy, vz, fx) {
 }
 
 function throwGrenade() {
+  if (current.kind === "land") return;
   if (performance.now() - lastGrenade < current.grenadeCooldown) return;
   lastGrenade = performance.now();
   if (current.kind === "applebee") {
@@ -3107,6 +2968,7 @@ function explode(pos, fx) {
 
 // ================= MR. MAHONEY: BAN HAMMER (V) =================
 function melee() {
+  if (current.kind === "land") return;
   const now = performance.now();
   if (now - lastMelee < current.meleeCooldown || meleeStart > 0) return;
   lastMelee = now;
@@ -3146,6 +3008,7 @@ const beams = [];
 const beamGeo = new THREE.CylinderGeometry(1, 1, 1, 12, 1, true);
 
 function startUlt() {
+  if (current.kind === "land") return;
   if (current.kind === "applebee") {
     if (beast) {
       // X again = call the beast back to her
@@ -4196,11 +4059,7 @@ function abilityDefs() {
     return {
       accent: "#65c9ff",
       tiles: [
-        { key: "LMB", name: "Auto Aim (20 DPS)", icon: ICON.phones },
-        { key: "RMB", name: "Big Phone", icon: ICON.grenade, cd: () => [lastLandPhone, current.landPhoneCooldown] },
-        { key: "SHIFT", name: "Rolling desk sprint", icon: ICON.dash },
-        { key: "X", name: "Switch to Cleetus", icon: ICON.dash },
-        { key: "Q", name: "Desk Sprint", icon: ICON.dash },
+        { key: "LMB", name: "Red tracking beam · 20 DPS", icon: ICON.sun },
       ],
       ultIcon: ICON.sun,
     };
@@ -4507,13 +4366,13 @@ function animate() {
 
   // Movement (not while the Esc menu is open)
   if (playing && !dead && !paused && ultPhase === 0 && now >= holdUntil) {
-    const moveSpeed = (shieldUp ? speed * current.shieldSpeed : speed) * (now < slowUntil ? 0.5 : 1) * (current.kind === "land" && (keys.ShiftLeft || keys.ShiftRight || now < landSprintUntil) ? 2.0 : 1);
+    const moveSpeed = (shieldUp ? speed * current.shieldSpeed : speed) * (now < slowUntil ? 0.5 : 1);
     const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
     const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
-    if (now >= landStunnedUntil && keys.KeyW) player.position.addScaledVector(forward, moveSpeed);
-    if (now >= landStunnedUntil && keys.KeyS) player.position.addScaledVector(forward, -moveSpeed);
-    if (now >= landStunnedUntil && keys.KeyD) player.position.addScaledVector(right, moveSpeed);
-    if (now >= landStunnedUntil && keys.KeyA) player.position.addScaledVector(right, -moveSpeed);
+    if (keys.KeyW) player.position.addScaledVector(forward, moveSpeed);
+    if (keys.KeyS) player.position.addScaledVector(forward, -moveSpeed);
+    if (keys.KeyD) player.position.addScaledVector(right, moveSpeed);
+    if (keys.KeyA) player.position.addScaledVector(right, -moveSpeed);
 
     // Dash glide + red trail
     if (dashFrames > 0) {
@@ -4539,7 +4398,6 @@ function animate() {
   }
   checkPads(now);
   player.rotation.y = yaw;
-  landDesk.visible = current.kind === "land" && (keys.ShiftLeft || keys.ShiftRight) && !firstPerson && !dead;
 
   // Online: tell the server where you are (20 times a second)
   if (mode === "online" && net && net.ready && playing && !dead && now - lastNetSend > NET_RATE) {
@@ -4562,8 +4420,7 @@ function animate() {
   // Other online players
   updateRemotes(dt, now);
   updateApples(now);
-  updateRemoteLandStreams(now);
-  updateLandBigPhones(now);
+  updateRemoteLandBeams(now);
   updateZones(now);
   updateBeast(dt, now);
   updateCrosshair();
@@ -4598,7 +4455,7 @@ function animate() {
   // First person hands / shield
   const fp = isFirstPerson();
   viewRoot.visible = playing && !dead && fp;
-  viewPhone.visible = ultPhase === 0 && !swinging && !(beeP < 1);
+  viewPhone.visible = current.kind !== "land" && ultPhase === 0 && !swinging && !(beeP < 1);
   viewPhoneL.visible = viewPhone.visible && current.kind === "applebee";
   shieldFP.visible = shieldUp;
   shieldWorld.visible = shieldUp && !fp;
@@ -4784,7 +4641,9 @@ function animate() {
   updateSideKeys();
 
   // Ability text
-  if (current.kind === "applebee") {
+  if (current.kind === "land") {
+    abilityHud.innerHTML = "Hold Left Click: Red tracking beam (20 damage/sec)<br>Only fires with a target within 10m";
+  } else if (current.kind === "applebee") {
     abilityHud.innerHTML =
       (appleReload > 0
         ? "RELOADING " + Math.max(0, (appleReload - now) / 1000).toFixed(1) + "s"
@@ -4811,7 +4670,8 @@ function animate() {
   const ultReady = ultPct >= 100;
   ultFill.style.width = ultPct + "%";
   ultFill.className = ultReady || ultPhase !== 0 ? "rainbow" : "ultGold";
-  if (current.kind === "applebee" && beast) ultLabel.textContent = beast.phase === "out" ? "BEE BEAST - X: RECALL" : "BEE BEAST RETURNING";
+  if (current.kind === "land") ultLabel.textContent = "MORE ABILITIES UNDER DEVELOPMENT";
+  else if (current.kind === "applebee" && beast) ultLabel.textContent = beast.phase === "out" ? "BEE BEAST - X: RECALL" : "BEE BEAST RETURNING";
   else if (ultPhase !== 0) ultLabel.textContent = "BALDING!";
   else if (ultReady) ultLabel.textContent = "ULT READY - PRESS X";
   else ultLabel.textContent = "ULT " + ultPct + "%";
