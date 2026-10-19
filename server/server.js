@@ -2,11 +2,11 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const SERVER_VERSION = 8; // the game warns players if this doesn't match game.js
+const SERVER_VERSION = 9; // the game warns players if this doesn't match game.js
 const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 30;
 const RESPAWN_MS = 3000;
-const CHARS = { mahoney: { health: 275 }, applebee: { health: 200 } };
+const CHARS = { mahoney: { health: 275 }, applebee: { health: 200 }, land: { health: 225 }, cleetus: { health: 225 } };
 
 // The SERVER decides damage, so players can't edit their own numbers
 const RULES = {
@@ -23,6 +23,8 @@ const RULES = {
   beastend: { dmg: 65, range: 160 }, // ult: final hit when it lets go
   beezone: { dmg: 15, range: 125, slow: 1500 }, // the sticky zone's one tick of damage + slow
   beeslow: { dmg: 0, range: 125, slow: 600 }, // standing in the zone keeps you slowed
+  landphone: { dmg: 20, range: 10 }, // Mr. Land/Cleetus auto-aim phone, 20 damage per second
+  landbig: { dmg: 40, range: 10, knockback: 3, stun: 1000 }, // big phone: 40 damage, knockback, and stun
 };
 const SHIELD_BLOCK = 0.85;
 const BONUS_SHIELD = 50; // blue bonus shield a player gets from siphon (keep the same as game.js)
@@ -168,6 +170,17 @@ function hit(a, m) {
   if (!rule || !t || t === a) return;
   if (!a.ready || !a.alive || !t.ready || !t.alive) return;
   if (Math.hypot(a.x - t.x, a.z - t.z) > rule.range) return;
+  const nowHit = Date.now();
+  if (m.k === "landphone") {
+    if (a.char !== "land" && a.char !== "cleetus") return;
+    if (nowHit - (a.landPhoneAt || 0) < 1000) return;
+    a.landPhoneAt = nowHit;
+  }
+  if (m.k === "landbig") {
+    if (a.char !== "land" && a.char !== "cleetus") return;
+    if (nowHit - (a.landBigAt || 0) < 7000) return;
+    a.landBigAt = nowHit;
+  }
   if (m.k === "hammer") {
     const now = Date.now();
     if (now - a.hammerAt > HAMMER_COOLDOWN) {
@@ -233,6 +246,16 @@ function hit(a, m) {
     bonus: +t.bonus.toFixed(1), by: a.id, dealt,
   });
 
+  if (m.k === "landbig" && t.hp > 0) {
+    const dx = t.x - a.x, dz = t.z - a.z;
+    const len = Math.hypot(dx, dz) || 1;
+    t.x = num(t.x + dx / len * rule.knockback, -48, 48, t.x);
+    t.z = num(t.z + dz / len * rule.knockback, -48, 48, t.z);
+    t.landStunnedUntil = Date.now() + rule.stun;
+    send(t, { t: "landhit", id: t.id, x: t.x, z: t.z, ms: rule.stun });
+    broadcast(room, { t: "landhit", id: t.id, x: t.x, z: t.z, ms: rule.stun }, t.id);
+  }
+
   if (t.hp <= 0) {
     t.hp = 0;
     t.bonus = 0;
@@ -295,8 +318,10 @@ function onMessage(p, m) {
   if (!p.ready || !p.alive) return;
 
   if (m.t === "st") {
-    p.x = num(m.x, -50, 50, p.x);
-    p.z = num(m.z, -50, 50, p.z);
+    if (Date.now() >= (p.landStunnedUntil || 0)) {
+      p.x = num(m.x, -50, 50, p.x);
+      p.z = num(m.z, -50, 50, p.z);
+    }
     p.yaw = num(m.yaw, -1000, 1000, p.yaw);
     p.pitch = num(m.pitch, -2, 2, p.pitch);
     p.sh = m.sh ? 1 : 0;
@@ -345,7 +370,7 @@ wss.on("connection", (ws) => {
     x: 0, z: 0, y: 1, char: "mahoney", yaw: 0, pitch: 0, sh: 0, inv: 0, bonus: 0, hp: 275, max: 275,
     lastHitBy: 0, lastHitAt: 0,
     kills: 0, deaths: 0, hammerAt: 0, hammerHit: new Set(), respawnTimer: null,
-    honeyAt: 0, lastHoney: 0, dmgBoostUntil: 0, // Ms. Applebee's Q (Honey Choice): heal throttle, ability cooldown, boost expiry
+    honeyAt: 0, lastHoney: 0, dmgBoostUntil: 0, landPhoneAt: 0, landBigAt: 0, landStunnedUntil: 0, // ability cooldowns and stun state
   };
   ws.isAlive = true;
   ws.on("pong", () => (ws.isAlive = true));
