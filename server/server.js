@@ -2,7 +2,7 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const SERVER_VERSION = 18; // protocol version; differing versions do not imply a stale deployment
+const SERVER_VERSION = 20; // protocol version; differing versions do not imply a stale deployment
 // Shared arena dimensions: keep game.js and server.js in sync.
 const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
 // Shared procedural Roundabout geometry. X=east, Z=south; north is -Z.
@@ -88,6 +88,7 @@ const CHARS = { mahoney: { health: 275 }, applebee: { health: 200 }, land: { hea
 
 // The SERVER decides damage, so players can't edit their own numbers
 const RULES = {
+  cleetusorb: { dmg: 7, range: 1000 }, // internal server orb ticks only
   landbeam: { dmg: 38, range: 20 }, // damage per second; server-timed channel only
   landblast: { dmg: 52, range: 20 },
   phone: { dmg: 10, range: 95 },
@@ -156,7 +157,7 @@ function num(v, lo, hi, d) {
   return Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : d;
 }
 function pub(p) {
-  return { id: p.id, name: p.name, char: p.char, y: p.y, x: p.x, z: p.z, yaw: p.yaw, hp: p.hp, max: p.max, alive: p.alive, bonus: p.bonus || 0, ultShield: p.ultShield || 0, balding: !!p.balding, sprint: !!p.sprint };
+  return { id: p.id, name: p.name, char: p.char, y: p.y, x: p.x, z: p.z, yaw: p.yaw, hp: p.hp, max: p.max, alive: p.alive, bonus: p.bonus || 0, ultShield: p.ultShield || 0, balding: !!p.balding, sprint: !!p.sprint, cleetus: !!p.cleetus };
 }
 
 function pickSpawn(room) {
@@ -243,13 +244,14 @@ function respawn(p) {
   p.balding = false;
   p.sprint = false;
   p.alive = true;
+  p.orbs = [];
   p.landTarget = 0;
   p.stunnedUntil = 0;
   p.sh = 0;
   p.inv = 0;
   p.y = 1;
   p.lastHitBy = 0;
-  broadcast(p.room, { t: "respawn", id: p.id, char: p.char, x: p.x, z: p.z, hp: p.hp, max: p.max, bonus: 0 });
+  broadcast(p.room, { t: "respawn", id: p.id, char: p.char, cleetus: !!p.cleetus, x: p.x, z: p.z, hp: p.hp, max: p.max, bonus: 0 });
 }
 
 // Gives a player full health + the blue bonus shield
@@ -259,17 +261,19 @@ function siphonPlayer(room, a) {
   broadcast(room, { t: "hp", id: a.id, hp: a.hp, max: a.max, bonus: a.bonus, ultShield: a.ultShield || 0, balding: !!a.balding, by: 0, dealt: 0 });
 }
 
-function hit(a, m, channelSeconds = 0, blastAuthorized = false) {
+function hit(a, m, channelSeconds = 0, blastAuthorized = false, orbAuthorized = false) {
   if (Date.now() < (a.stunnedUntil || 0)) return;
   const room = a.room;
   const rule = RULES[m.k];
   const t = room.players.get(m.target);
   if (!rule || !t || t === a) return;
   if (!a.ready || !a.alive || !t.ready || !t.alive) return;
+  if (m.k === "cleetusorb" && (!orbAuthorized || a.char !== "land" || !a.cleetus || channelSeconds <= 0)) return;
+  if (m.k === "landbeam" && a.cleetus) return;
   // Land can only damage through the server-timed primary channel.
   if (m.k === "landbeam" && (a.char !== "land" || channelSeconds <= 0)) return;
   if (m.k === "landblast" && (a.char !== "land" || !blastAuthorized)) return;
-  if (a.char === "land" && m.k !== "landbeam" && m.k !== "landblast") return;
+  if (a.char === "land" && m.k !== "landbeam" && m.k !== "landblast" && m.k !== "cleetusorb") return;
   if (Math.hypot(a.x - t.x, a.z - t.z) > rule.range) return;
   if (m.k === "hammer") {
     const now = Date.now();
@@ -320,7 +324,7 @@ function hit(a, m, channelSeconds = 0, blastAuthorized = false) {
     a.appleAt = nowA;
   }
 
-  let dmg = rule.dmg * (m.k === "landbeam" ? Math.min(0.1, channelSeconds) : 1);
+  let dmg = rule.dmg * ((m.k === "landbeam" || m.k === "cleetusorb") ? Math.min(0.1, channelSeconds) : 1);
   if (a.char === "applebee" && a.dmgBoostUntil && Date.now() < a.dmgBoostUntil) dmg *= 1.2; // the bees' +20% from Honey Choice
   if (t.sh) dmg *= 1 - SHIELD_BLOCK;
   const dealt = Math.min(dmg, t.hp + t.bonus + (t.ultShield || 0));
@@ -353,7 +357,8 @@ function hit(a, m, channelSeconds = 0, blastAuthorized = false) {
     const how = { hammer: "banned", beam: "beam", apple: "apple", mine: "mine", hive: "hive", bee: "bee", beezone: "bee", beast: "beast", beasttick: "beast", beastend: "beast" }[m.k] || "";
     broadcast(room, { t: "kill", killer: a.id, victim: t.id, how });
     // siphon: the killer gets full health plus a 50 blue bonus shield
-    siphonPlayer(room, a);
+    if (m.k !== "cleetusorb") siphonPlayer(room, a);
+    t.orbs = [];
     t.respawnTimer = setTimeout(() => respawn(t), RESPAWN_MS);
   }
   return dealt;
@@ -366,6 +371,7 @@ function switchTeacher(p, m) {
   const key = CHARS[m.char] ? m.char : "mahoney";
   const ch = CHARS[key];
   p.char = key;
+  p.cleetus = false; p.orbs = [];
   const killer = room.players.get(p.lastHitBy);
   if (killer && killer !== p && killer.ready && Date.now() - p.lastHitAt < LAST_HIT_WINDOW) {
     p.deaths++;
@@ -385,7 +391,8 @@ function onMessage(p, m) {
     if (p.lastPopulationAt != null && now - p.lastPopulationAt < 1000) return;
     p.lastPopulationAt = now;
     const counts = {football:0, roundabout:0};
-    for (const room of rooms.values()) counts[room.map === "roundabout" ? "roundabout" : "football"] += room.players.size;
+    counts.football = rooms.get("PUBLIC")?.players.size || 0;
+    counts.roundabout = rooms.get("ROUND")?.players.size || 0;
     send(p, {t:"population", counts});
     return;
   }
@@ -411,7 +418,7 @@ function onMessage(p, m) {
     p.lastHitBy = 0;
     p.alive = true;
     p.ready = true;
-    send(p, { t: "respawn", id: p.id, char: p.char, x: p.x, z: p.z, hp: p.hp, max: p.max, bonus: 0 });
+    send(p, { t: "respawn", id: p.id, char: p.char, cleetus: !!p.cleetus, x: p.x, z: p.z, hp: p.hp, max: p.max, bonus: 0 });
     broadcast(room, { t: "joined", p: pub(p) }, p.id);
     return;
   }
@@ -442,9 +449,17 @@ function onMessage(p, m) {
     sendShieldState(p);
     return;
   }
+  if (m.t === "cleetus") {
+    if (p.char !== "land" || typeof m.active !== "boolean") return;
+    p.cleetus = m.active;
+    p.landTarget = 0; p.orbs = [];
+    broadcast(room, {t:"cleetus", id:p.id, active:p.cleetus});
+    return;
+  }
+  if (m.t === "cleetusfire") { fireCleetusOrb(p, m); return; }
   if (m.t === "landblast") { fireLandBlastServer(p, m); return; }
   if (m.t === "landlock") {
-    if (p.char !== "land") return;
+    if (p.char !== "land" || p.cleetus) return;
     const target = Number.isInteger(m.target) ? m.target : 0;
     if (!p.landTarget || p.landTarget !== target) p.landTickAt = Date.now();
     p.landTarget = target;
@@ -729,7 +744,7 @@ function updateLandChannel(p, now) {
   const dx = t ? t.x - p.x : 0, dy = t ? t.y - p.y : 0, dz = t ? t.z - p.z : 0;
   const distance = Math.hypot(dx, dy, dz);
   const facing = distance < 0.001 ? 1 : (-Math.sin(p.yaw) * Math.cos(p.pitch) * dx + Math.sin(p.pitch) * dy - Math.cos(p.yaw) * Math.cos(p.pitch) * dz) / distance;
-  if (now < (p.stunnedUntil || 0) || p.char !== "land" || !p.alive || !p.ready || !t || t === p || !t.alive || !t.ready ||
+  if (now < (p.stunnedUntil || 0) || p.char !== "land" || p.cleetus || !p.alive || !p.ready || !t || t === p || !t.alive || !t.ready ||
       now - p.landLockAt > 250 || distance > 20 || facing < Math.cos(Math.PI / 4) ||
       !landLineClear({ x: p.x, y: p.y + 0.5, z: p.z }, { x: t.x, y: t.y + 0.5, z: t.z }, mapForRoom(p.room).wallBoxes)) {
     p.landTarget = 0;
@@ -742,20 +757,72 @@ function updateLandChannel(p, now) {
   broadcast(p.room, { t: "fx", id: p.id, k: "lb", a: [t.alive ? t.id : 0] }, p.id);
 }
 
+// Shared deterministic orb movement: slow floating spheres bounce off solid surfaces.
+function stepCleetusOrb(o, dt, boxes, limits) {
+  o.life -= dt;
+  const radius = 0.24;
+  for (const axis of ['x', 'y', 'z']) {
+    const velocity = 'v' + axis;
+    const old = o[axis];
+    o[axis] += o[velocity] * dt;
+    const blocked = o.y < radius || o.y > 28 || Math.abs(o.x) > limits.limitX || Math.abs(o.z) > limits.limitZ || boxes.some(b =>
+      o.x > b.minX - radius && o.x < b.maxX + radius && o.z > b.minZ - radius && o.z < b.maxZ + radius && o.y > b.y0 - radius && o.y < b.h + radius);
+    if (blocked) { o[axis] = old; o[velocity] *= -1; o.bounces++; }
+  }
+  return o.life > 0 && o.bounces <= 10;
+}
+
+let orbSequence = 0;
+function fireCleetusOrb(p, m) {
+  const now = Date.now();
+  if (p.char !== "land" || !p.cleetus || now - (p.lastOrbAt ?? -Infinity) < 700) return;
+  if (![m.dx,m.dy,m.dz].every(Number.isFinite)) return;
+  const length = Math.hypot(m.dx,m.dy,m.dz);
+  if (length < 0.9 || length > 1.1) return;
+  p.lastOrbAt = now;
+  const o = {id:++orbSequence, owner:p.id, x:p.x, y:p.y+0.45, z:p.z,
+    vx:m.dx/length*6, vy:m.dy/length*6, vz:m.dz/length*6, life:4, bounces:0};
+  p.orbs = p.orbs || []; p.orbs.push(o);
+}
+function updateCleetusOrbs(p, now) {
+  const dt = Math.max(0, Math.min(0.1, (now - (p.orbTickAt ?? now)) / 1000));
+  p.orbTickAt = now;
+  if (!p.ready || !p.alive || p.char !== "land" || !p.cleetus) { p.orbs = []; return; }
+  const map = mapForRoom(p.room);
+  p.orbs = (p.orbs || []).filter(o => stepCleetusOrb(o, dt, map.wallBoxes, map.limits));
+  if (now < (p.stunnedUntil || 0) || dt <= 0) return;
+  let healed = 0;
+  for (const target of p.room.players.values()) {
+    if (target === p || !target.ready || !target.alive) continue;
+    const center = {x:target.x,y:target.y+0.45,z:target.z};
+    if (!p.orbs.some(o => Math.hypot(o.x-center.x,o.y-center.y,o.z-center.z) <= 2.5 && landLineClear(o, center, map.wallBoxes))) continue;
+    healed += hit(p, {k:"cleetusorb", target:target.id}, dt, false, true) || 0;
+  }
+  if (healed > 0 && p.hp < p.max) {
+    p.hp = Math.min(p.max, p.hp + healed);
+    sendShieldState(p);
+  }
+}
+
 // send everyone's position 20 times a second
 setInterval(() => {
   for (const room of rooms.values()) {
     for (const p of room.players.values()) {
       if (p.balding && Date.now() >= p.baldingUntil) endBalding(p);
       updateLandChannel(p, Date.now());
+      updateCleetusOrbs(p, Date.now());
     }
+    const orbs = [];
+    for (const p of room.players.values()) for (const o of p.orbs || []) orbs.push({id:o.id,owner:o.owner,x:o.x,y:o.y,z:o.z});
+    if (orbs.length || room.hadOrbs) broadcast(room, {t:"orbs", orbs});
+    room.hadOrbs = orbs.length > 0;
     if (room.players.size < 2) continue;
     const list = [];
     for (const p of room.players.values()) {
       if (p.ready && p.alive) {
         list.push({
           id: p.id, x: +p.x.toFixed(2), z: +p.z.toFixed(2),
-          y: +p.y.toFixed(2), yaw: +p.yaw.toFixed(3), pitch: +p.pitch.toFixed(3), hp: p.hp, bonus: p.bonus || 0, ultShield: p.ultShield || 0, sh: p.sh, inv: 0, balding: !!p.balding, sprint: !!p.sprint,
+          y: +p.y.toFixed(2), yaw: +p.yaw.toFixed(3), pitch: +p.pitch.toFixed(3), hp: p.hp, bonus: p.bonus || 0, ultShield: p.ultShield || 0, sh: p.sh, inv: 0, balding: !!p.balding, sprint: !!p.sprint, cleetus: !!p.cleetus,
         });
       }
     }
