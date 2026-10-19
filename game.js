@@ -468,7 +468,7 @@ const BEAM_HIT_RADIUS = 1.4;
 const BEAM_LIFE = 45; // frames a beam stays visible
 const PHONE_VIEW = { x: 0.38, y: -0.36, z: -0.8 }; // where the phone sits in first person
 const NET_RATE = 50; // ms between position updates sent online (20 per second)
-const SERVER_VERSION = 9; // must match server.js (used to warn you if the server is old)
+const SERVER_VERSION = 10; // protocol version; a difference is not proof the server is outdated
 const LAST_HIT_WINDOW = 10000; // ms: switching teachers gives the kill to whoever hit you in this time
 
 // ----- BOT SETTINGS (change these to make bots easier or harder) -----
@@ -911,8 +911,8 @@ function updateRoomHud() {
     net.code === "PUBLIC" ? "PUBLIC LOBBY" : "ROOM CODE: " + net.code + " (share it with friends)";
   roomHud.textContent =
     where + "   |   Players: " + (remotes.size + 1) +
-    (net.old ? "   |   SERVER OUT OF DATE - redeploy it on Render" : "");
-  roomHud.style.color = net.old ? "#ff6b6b" : "#ffd700";
+    (net.old ? "   |   Versions differ (game " + SERVER_VERSION + ", server " + net.serverVersion + ")" : "");
+  roomHud.style.color = net.old ? "#ffdb8a" : "#ffd700";
   roomHud.style.display = "block";
 }
 
@@ -1556,6 +1556,10 @@ function selectCharacter(key) {
   playerHealth = maxHealth;
   speed = current.speed;
   lastShot = lastDash = lastGrenade = lastMelee = -99999;
+  lastLandPhone = landDamageTick = -99999;
+  mouseHeld = false;
+  landBeam.visible = false;
+  landLockHud.style.display = "none";
   resetApples();
   bonusShield = 0;
   dashFrames = 0;
@@ -1782,7 +1786,11 @@ addEventListener("mousedown", (e) => {
 });
 addEventListener("mouseup", (e) => {
   if (e.button === 2) rightHeld = false;
-  if (e.button === 0) mouseHeld = false;
+  if (e.button === 0) {
+    mouseHeld = false;
+    landBeam.visible = false;
+    landLockHud.style.display = "none";
+  }
 });
 addEventListener("contextmenu", (e) => e.preventDefault());
 let justSelectedAt = 0; // guards against a failed/slow pointer lock bouncing you into the pause menu
@@ -1790,6 +1798,8 @@ document.addEventListener("pointerlockchange", () => {
   if (!document.pointerLockElement) {
     rightHeld = false;
     mouseHeld = false;
+    landBeam.visible = false;
+    landLockHud.style.display = "none";
     // the mouse got released (Esc was pressed): open the pause menu.
     // Skip this for a moment right after picking a teacher, since some browsers
     // fire this same event when the lock request itself just failed or is still
@@ -2415,7 +2425,7 @@ function startOnline(join) {
   modeOverlay.style.display = "none";
   privateOverlay.style.display = "none";
 
-  const myNet = { ws: null, id: null, code: "", ready: false, join, old: false };
+  const myNet = { ws: null, id: null, code: "", ready: false, join, old: false, serverVersion: "?" };
   net = myNet;
   let tries = 0;
 
@@ -2465,7 +2475,8 @@ function handleNet(m) {
     case "welcome": {
       net.id = m.id;
       net.code = m.code;
-      net.old = m.v !== SERVER_VERSION; // the server is running an older server.js
+      net.serverVersion = m.v ?? "?";
+      net.old = m.v !== SERVER_VERSION; // a version mismatch is NOT necessarily an old server
       for (const p of m.players) addRemote(p);
       statusOverlay.style.display = "none";
       inMatch = false;
@@ -2552,6 +2563,11 @@ function handleNet(m) {
         clearRemoteMines(m.victim);
       }
       updateStats();
+      break;
+    }
+    case "form": {
+      const r = remotes.get(m.id);
+      if (r && (m.char === "land" || m.char === "cleetus")) setRemoteChar(r, m.char);
       break;
     }
     case "landhit": {
@@ -2666,6 +2682,10 @@ function handleFx(m) {
   } else if (m.k === "z") {
     addZone(a[0], a[1], a[2], a[3], a[4], false);
     boomAt(new THREE.Vector3(a[0], a[1] + 0.5, a[2]), a[3], 0xffd23f);
+  } else if (m.k === "lb" && a.length >= 6) {
+    // Another Mr. Land's big phone. Effects are visual; their server applies damage.
+    spawnLandBigPhone(new THREE.Vector3(a[0], a[1], a[2]),
+      new THREE.Vector3(a[3], a[4], a[5]), null, true);
   }
 }
 
@@ -2736,7 +2756,7 @@ function switchLandForm() {
   // Tell the multiplayer server which appearance other players should render.
   // The server must accept the `cleetus` character key for this to sync online.
   if (mode === "online" && net && net.ready) {
-    netSend({ t: "switch", char: landForm === "land" ? "land" : "cleetus" });
+    netSend({ t: "form", char: landForm === "land" ? "land" : "cleetus" });
   }
 }
 
@@ -2756,56 +2776,149 @@ function nearestLandTarget(maxRange = 10) {
   return bestTarget;
 }
 
-// Left click: automatically locks onto the closest bot/player within 10 metres, 20 DPS.
+// Mr. Land's primary attack is a continuously tracking, short-range stream of
+// phones. No target = no beam, no spawned normal bullets, and no damage.
+const LAND_RANGE = 10;
+const LAND_TICK_MS = 100;
+const LAND_TICK_DAMAGE = 2; // 2 every 100ms = 20 damage per second
 let landDamageTick = -99999;
+const landBeam = new THREE.Group();
+const landBeamPhones = [];
+const landBeamPoints = new Float32Array(6);
+const landBeamGeometry = new THREE.BufferGeometry();
+landBeamGeometry.setAttribute("position", new THREE.BufferAttribute(landBeamPoints, 3));
+const landBeamLine = new THREE.Line(landBeamGeometry, new THREE.LineBasicMaterial({
+  color: 0x84f5ff, transparent: true, opacity: 0.82, depthTest: false,
+}));
+landBeamLine.renderOrder = 15;
+landBeam.add(landBeamLine);
+for (let i = 0; i < 12; i++) {
+  const phone = new THREE.Mesh(phoneGeo, phoneMat);
+  phone.renderOrder = 16;
+  landBeam.add(phone);
+  landBeamPhones.push(phone);
+}
+landBeam.visible = false;
+scene.add(landBeam);
+const landLockHud = document.createElement("div");
+landLockHud.style.cssText = "position:fixed;left:50%;top:57%;transform:translateX(-50%);" +
+  "font:bold 14px sans-serif;letter-spacing:1px;color:#86f8ff;text-shadow:0 1px 5px #000;" +
+  "pointer-events:none;z-index:5;display:none;white-space:nowrap";
+document.body.appendChild(landLockHud);
+
 function landAutoAimAttack() {
-  if (!playing || dead || paused || current.kind !== "land" || !document.pointerLockElement) return;
+  if (!playing || dead || paused || current.kind !== "land" || !mouseHeld ||
+      !document.pointerLockElement || ultPhase !== 0) {
+    landBeam.visible = false;
+    landLockHud.style.display = "none";
+    return;
+  }
+  const target = nearestLandTarget(LAND_RANGE);
+  landLockHud.style.display = "block";
+  if (!target) {
+    landBeam.visible = false;
+    landLockHud.textContent = "NO TARGET IN 10m";
+    return; // No random phone shots when no one is in range.
+  }
+
   const now = performance.now();
-  if (now - landDamageTick < 1000) return;
-  const target = nearestLandTarget(10);
-  if (!target) return;
+  landBeam.visible = true;
+  landLockHud.textContent = "LOCKED: " + target.entity.name;
+  const origin = new THREE.Vector3(player.position.x, player.position.y + 0.5, player.position.z);
+  const end = target.entity.mesh.position.clone().add(new THREE.Vector3(0, 0.15, 0));
+  const linePositions = landBeamGeometry.attributes.position;
+  linePositions.setXYZ(0, origin.x, origin.y, origin.z);
+  linePositions.setXYZ(1, end.x, end.y, end.z);
+  linePositions.needsUpdate = true;
+  landBeamGeometry.computeBoundingSphere();
+  const direction = new THREE.Vector3().subVectors(end, origin);
+  for (let i = 0; i < landBeamPhones.length; i++) {
+    // Wrap along the line so the stream moves *towards* the target.
+    const t = 0.07 + 0.88 * (((i / landBeamPhones.length) + now / 650) % 1);
+    const phone = landBeamPhones[i];
+    phone.position.copy(origin).addScaledVector(direction, t);
+    phone.quaternion.copy(camera.quaternion); // visible from first and third person
+    phone.rotateZ(now * 0.012 + i * 0.75);
+    const size = 0.30 + 0.06 * Math.sin(now / 110 + i);
+    phone.scale.set(size * phoneAspect, size, 1);
+  }
+  if (now - landDamageTick < LAND_TICK_MS) return;
   landDamageTick = now;
   if (target.type === "bot") {
-    damageBot(target.entity, 20, "land", "player");
-    hitmarker(target.entity.health <= 20);
+    damageBot(target.entity, LAND_TICK_DAMAGE, "land", "player");
   } else if (mode === "online") {
-    // The online server applies its configured phone hit damage to this player.
     netSend({ t: "hit", target: target.entity.id, k: "landphone" });
-    hitmarker(false);
   }
-  addFeedText((landForm === "land" ? "Mr. Land" : "Cleetus") + " auto-locked target in 10m");
 }
 
-// Right click: big phone, 7s cooldown. Bots get 40 damage + knockback + stun.
-function fireLandPhone() {
-  const now = performance.now();
-  if (current.kind !== "land" || now - lastLandPhone < current.landPhoneCooldown) return;
-  lastLandPhone = now;
-  const target = nearestLandTarget(10);
-  throwAnim = 1;
-  if (!target) { addFeedText("Big Phone fired — no target within 10m"); return; }
-  const position = target.type === "bot" ? target.entity.mesh.position : target.entity.mesh.position;
-  const dx = position.x - player.position.x;
-  const dz = position.z - player.position.z;
-  const len = Math.hypot(dx, dz) || 1;
-  if (target.type === "bot") {
-    damageBot(target.entity, 40, "land", "player");
-    position.x += dx / len * 3;
-    position.z += dz / len * 3;
-    target.entity.stunnedUntil = now + 1000;
-  } else if (mode === "online") {
-    // Server-authoritative 40-damage big phone, knockback, and stun.
-    netSend({ t: "hit", target: target.entity.id, k: "landbig" });
-  }
-  addFeedText("BIG PHONE! Auto-aim • knockback/stun apply to local bots");
-  const phone = new THREE.Mesh(phoneGeo, phoneMat);
-  phone.scale.set(2.2 * phoneAspect, 2.2, 1);
-  phone.position.copy(player.position).add(new THREE.Vector3(dx / len * 1.2, 0.5, dz / len * 1.2));
-  scene.add(phone);
-  phone.userData.landFxLife = 18;
-  landPhoneFx.push(phone);
-}
+// A real, animated oversized phone flying toward the auto-locked target.
+// Hits on impact, and the server handles online health, knockback and stun.
 const landPhoneFx = [];
+function spawnLandBigPhone(start, destination, target = null, visualOnly = false) {
+  const phone = new THREE.Mesh(phoneGeo, phoneMat);
+  phone.scale.set(2.5 * phoneAspect, 2.5, 1);
+  phone.position.copy(start);
+  phone.renderOrder = 17;
+  scene.add(phone);
+  landPhoneFx.push({ phone, start: start.clone(), end: destination.clone(),
+    target, visualOnly, started: performance.now(), duration: 420 });
+}
+
+function fireLandPhone() {
+  if (!playing || dead || paused || current.kind !== "land" || ultPhase !== 0) return;
+  const now = performance.now();
+  if (now - lastLandPhone < current.landPhoneCooldown) return;
+  const target = nearestLandTarget(LAND_RANGE);
+  if (!target) {
+    addFeedText("Big Phone: find a target within 10m first (still ready)");
+    return; // Do not start cooldown or spawn a pointless phone.
+  }
+  lastLandPhone = now;
+  throwAnim = 1;
+  viewKick = 1;
+  const start = new THREE.Vector3(player.position.x, player.position.y + 0.6, player.position.z);
+  const end = target.entity.mesh.position.clone().add(new THREE.Vector3(0, 0.2, 0));
+  spawnLandBigPhone(start, end, target, false);
+  netFx("lb", [start.x, start.y, start.z, end.x, end.y, end.z]);
+  addFeedText("BIG PHONE → " + target.entity.name);
+}
+
+function updateLandBigPhones(now) {
+  for (let i = landPhoneFx.length - 1; i >= 0; i--) {
+    const shot = landPhoneFx[i];
+    const progress = Math.min(1, (now - shot.started) / shot.duration);
+    if (shot.target && shot.target.entity.alive)
+      shot.end.copy(shot.target.entity.mesh.position).add(new THREE.Vector3(0, 0.2, 0));
+    shot.phone.position.lerpVectors(shot.start, shot.end, progress);
+    shot.phone.position.y += Math.sin(progress * Math.PI) * 0.45;
+    shot.phone.quaternion.copy(camera.quaternion);
+    shot.phone.rotateZ(progress * Math.PI * 3);
+    if (progress < 1) continue;
+    scene.remove(shot.phone);
+    landPhoneFx.splice(i, 1);
+    if (shot.visualOnly || !shot.target || !shot.target.entity.alive) continue;
+    const target = shot.target;
+    // Don't apply damage if the target escaped the 10m range before impact.
+    if (Math.hypot(target.entity.mesh.position.x - player.position.x,
+                   target.entity.mesh.position.z - player.position.z) > LAND_RANGE) continue;
+    if (target.type === "bot") {
+      const pos = target.entity.mesh.position;
+      const dx = pos.x - player.position.x, dz = pos.z - player.position.z;
+      const len = Math.hypot(dx, dz) || 1;
+      damageBot(target.entity, 40, "land", "player");
+      if (target.entity.alive) {
+        pos.x += dx / len * 3;
+        pos.z += dz / len * 3;
+        pos.x = Math.max(-48, Math.min(48, pos.x));
+        pos.z = Math.max(-48, Math.min(48, pos.z));
+        pushOutOfWalls(pos, pos.y - 1, STEP_HEIGHT);
+        target.entity.stunnedUntil = now + 1000;
+      }
+    } else if (mode === "online") {
+      netSend({ t: "hit", target: target.entity.id, k: "landbig" });
+    }
+  }
+}
 
 function shoot() {
   viewKick = 1; // hand recoil in first person
@@ -2821,6 +2934,7 @@ function tryShoot() {
   if (!playing || dead || paused || ultPhase !== 0 || shieldUp || meleeStart > 0 || performance.now() < holdUntil) return;
   if (!document.pointerLockElement) return;
   const now = performance.now();
+  if (current.kind === "land") return; // Land is beam-only, never Mahoney's normal burst
   if (now - lastShot < current.fireDelay) return;
   if (current.kind === "applebee") {
     if (appleReload > 0 || appleAmmo <= 0) return;
@@ -4351,8 +4465,7 @@ function animate() {
     player.position.z = Math.max(-48, Math.min(48, player.position.z));
 
     // Hold the mouse to keep shooting
-    if (mouseHeld) tryShoot();
-    if (current.kind === "land" && mouseHeld) landAutoAimAttack();
+    if (mouseHeld && current.kind !== "land") tryShoot();
   }
   pushOutOfWalls(player.position, player.position.y - 1, STEP_HEIGHT);
   physicsStep(dt, playing && !dead && !paused && ultPhase === 0 && now >= holdUntil);
@@ -4385,12 +4498,8 @@ function animate() {
   // Other online players
   updateRemotes(dt, now);
   updateApples(now);
-  for (let i = landPhoneFx.length - 1; i >= 0; i--) {
-    const fx = landPhoneFx[i];
-    fx.userData.landFxLife--;
-    fx.position.y += 0.015;
-    if (fx.userData.landFxLife <= 0) { scene.remove(fx); landPhoneFx.splice(i, 1); }
-  }
+  landAutoAimAttack();
+  updateLandBigPhones(now);
   updateZones(now);
   updateBeast(dt, now);
   updateCrosshair();
