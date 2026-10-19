@@ -1,14 +1,90 @@
 import * as THREE from "three";
 import { SERVER_URL } from "./config.js"; // your Render address lives in config.js
 
-const GAME_BUILD = 16;
+const GAME_BUILD = 17;
 // Shared arena dimensions: keep game.js and server.js in sync.
 const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
 
 const buildBadge = document.createElement("div");
-buildBadge.textContent = "GAME v16 • BOT / OFFLINE";
+buildBadge.textContent = "GAME v17 • BOT / OFFLINE";
 buildBadge.style.cssText = "position:fixed;top:5px;left:8px;z-index:10000;color:#fff;background:#111b;padding:3px 7px;font:11px sans-serif;pointer-events:none";
 document.body.appendChild(buildBadge);
+
+// Shared procedural Roundabout geometry. X=east, Z=south; north is -Z.
+function createRoundaboutLayout() {
+  const blocks = [], floors = [], chains = [], cones = [], arrows = [], signs = [], spawns = [];
+  const rotate = (x, z, q) => q === 0 ? { x, z } : q === 1 ? { x: -z, z: x } : q === 2 ? { x: -x, z: -z } : { x: z, z: -x };
+  function block(x,z,w,d,y0,h,color,kind='wall',q=0) {
+    const p=rotate(x,z,q); blocks.push({x:p.x,z:p.z,w:q%2?d:w,d:q%2?w:d,y0,h,color,kind});
+  }
+  function floor(x,z,w,d,q=0) { const p=rotate(x,z,q);floors.push({x:p.x,z:p.z,w:q%2?d:w,d:q%2?w:d}); }
+  function chain(a,b) {
+    chains.push({a,b}); const length=Math.hypot(b.x-a.x,b.z-a.z), n=Math.ceil(length/0.35);
+    for(let i=0;i<n;i++) {
+      const t=(i+0.5)/n;
+      // Visible chain corridor barrier: two chains, anchored by cones.
+      block(a.x+(b.x-a.x)*t,a.z+(b.z-a.z)*t,Math.abs(b.x-a.x)/n+0.09,Math.abs(b.z-a.z)/n+0.09,0,1.15,0x6d7880,'chain');
+    }
+  }
+  function cone(x,z) {cones.push({x,z});block(x,z,0.55,0.55,0,1.15,0xff701f,'cone');}
+  function arrow(x,z,dx,dz,q=0) {const p=rotate(x,z,q),dir=rotate(dx,dz,q);arrows.push({...p,dx:dir.x,dz:dir.z});}
+  floor(0,0,24,24);
+  const names=['NORTH','EAST','SOUTH','WEST'];
+  for(let q=0;q<4;q++) {
+    floor(0,-27,12,30,q); floor(15,-27,18,18,q);
+    block(-6,-27,0.4,30,0,6.4,0xe5e1d8,'wall',q);
+    block(6,-35.5,0.4,13,0,6.4,0xe5e1d8,'wall',q);
+    block(6,-18.5,0.4,13,0,6.4,0xe5e1d8,'wall',q);
+    block(6,-27,0.4,4,3.5,6.4,0xe5e1d8,'wall',q); // 4m open doorway
+    block(0,-42,12.4,0.4,0,6.4,0xe5e1d8,'wall',q);
+    for(const x of [-9,9]) block(x,-12,6,0.4,0,6.4,0xe5e1d8,'wall',q);
+    block(24,-27,0.4,18.4,0,6.4,0xe5e1d8,'wall',q);
+    block(15,-36,18,0.4,0,6.4,0xe5e1d8,'wall',q);
+    block(15,-18,18,0.4,0,6.4,0xe5e1d8,'wall',q);
+    block(8,-29.05,4,0.14,0,3.4,0x955c36,'door',q); // door leaf swung fully into room
+    // Low red wall stripe, rendered separately so it adds no invisible collision.
+    for(const z of [-38,-35,-32,-20,-17]) block(-5.45,z,0.7,1.6,0,2.6,0xa71930,'locker',q);
+    for(const z of [-31.5,-21.5]) for(const x of [11,16,21]) {
+      block(x,z,1.8,1.2,0.95,1.1,0xd0a46f,'desk',q);
+      for(const dx of [-0.7,0.7]) for(const dz of [-0.43,0.43]) block(x+dx,z+dz,0.09,0.09,0,0.95,0x3e4651,'leg',q);
+      block(x-1.4,z,0.65,0.7,0,0.55,0x3b566a,'chair',q);
+      block(x-1.68,z,0.12,0.7,0.55,1.05,0x3b566a,'chair',q);
+    }
+    block(21,-27,2.2,3.2,0,1.15,0x9f704b,'teacherdesk',q);
+    block(9,-34.9,3.5,1,0,2.5,0x8a603f,'bookshelf',q);
+    for(const x of [-2.7,2.7]) {const p=rotate(x,-38,q);spawns.push([p.x,p.z]);}
+    const roomSpawn=rotate(15,-27,q);spawns.push([roomSpawn.x,roomSpawn.z]);
+    const sign=rotate(0,-40.9,q);signs.push({...sign,q,title:names[q]+' HALL',room:'CLASSROOM '+(101+q)});
+    // Right-hand traffic: north-bound entry example runs south on x=-2.7.
+    for(const z of [-35,-29,-23,-17,-11]) {arrow(-2.7,z,0,1,q);arrow(2.7,z,0,-1,q);}
+    arrow(-3,-8.5,-0.45,1,q);arrow(3,-8.5,0,-1,q);
+    let prev=null;
+    for(const z of [-39,-34,-29,-24,-19,-14,-9]) {
+      const p=rotate(0,z,q);cone(p.x,p.z);if(prev)chain(prev,p);prev=p;
+    }
+  }
+  // A trashcan island with a small cone-and-chain ring very close around it.
+  block(0,0,1.55,1.55,0,1.7,0x37434c,'trashcan');
+  for(let i=0;i<12;i++) {
+    const a=i*Math.PI/6,b=(i+1)*Math.PI/6;
+    const p={x:2.5*Math.cos(a),z:-2.5*Math.sin(a)},t={x:2.5*Math.cos(b),z:-2.5*Math.sin(b)};
+    cone(p.x,p.z);chain(p,t);
+    // Tangent (-sin,-cos) is counterclockwise in a north-up overhead view.
+    arrow(4.7*Math.cos(a),-4.7*Math.sin(a),-Math.sin(a),-Math.cos(a));
+  }
+  // Outer guide arcs leave wide openings aligned with each hallway.
+  for(let q=0;q<4;q++) {
+    let prev=null;
+    for(const deg of [35,45,55]) {
+      const a=(deg+q*90)*Math.PI/180,p={x:7.5*Math.cos(a),z:-7.5*Math.sin(a)};
+      cone(p.x,p.z);if(prev)chain(prev,p);prev=p;
+    }
+  }
+  // Ceilings have collision too; camera stays inside rather than looking through walls.
+  for(const f of floors) block(f.x,f.z,f.w,f.d,6.4,6.6,0xf4f1e9,'ceiling');
+  const wallBoxes=blocks.map(b=>({minX:b.x-b.w/2,maxX:b.x+b.w/2,minZ:b.z-b.d/2,maxZ:b.z+b.d/2,y0:b.y0,h:b.h}));
+  return {blocks,floors,chains,cones,arrows,signs,spawns,wallBoxes,limits:{halfX:44,halfZ:44,limitX:41.2,limitZ:41.2}};
+}
 
 // ================= SCENE =================
 const scene = new THREE.Scene();
@@ -26,12 +102,14 @@ const sun = new THREE.DirectionalLight(0xffffff, 1);
 sun.position.set(10, 20, 10);
 scene.add(sun);
 
+const stadiumRoot = new THREE.Group();
+scene.add(stadiumRoot);
 const floor = new THREE.Mesh(
   new THREE.PlaneGeometry(MAP.halfX * 2 + 4, MAP.halfZ * 2 + 4),
   new THREE.MeshStandardMaterial({ color: 0x55aa55 })
 );
 floor.rotation.x = -Math.PI / 2;
-scene.add(floor);
+stadiumRoot.add(floor);
 
 const player = new THREE.Mesh(
   new THREE.BoxGeometry(1, 2, 1),
@@ -159,7 +237,7 @@ const field = new THREE.Mesh(
 );
 field.rotation.x = -Math.PI / 2;
 field.position.y = 0.02;
-scene.add(field);
+stadiumRoot.add(field);
 
 // Logo at midfield + on the shield (only appears if logo.png exists)
 texLoader.load("logo.png", (t) => {
@@ -170,7 +248,7 @@ texLoader.load("logo.png", (t) => {
   );
   logo.rotation.x = -Math.PI / 2;
   logo.position.y = 0.06;
-  scene.add(logo);
+  stadiumRoot.add(logo);
 
   shieldLogoMat.map = t;
   shieldLogoMat.opacity = 0.95;
@@ -189,7 +267,7 @@ function makeGoalpost(z) {
   for (const [w, h, d, x, y] of parts) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), goldMat);
     m.position.set(x, y, z);
-    scene.add(m);
+    stadiumRoot.add(m);
   }
 }
 makeGoalpost(-44);
@@ -215,7 +293,7 @@ function trackStrip(inner, outer, color, height) {
     new THREE.MeshStandardMaterial({ color, roughness: 0.95, side: THREE.DoubleSide }));
   mesh.rotation.x = -Math.PI / 2;
   mesh.position.y = height;
-  scene.add(mesh);
+  stadiumRoot.add(mesh);
 }
 // Flat gray walking apron connects the track with the bleachers.
 trackStrip(25.5, 42, 0x898d90, 0.025);
@@ -231,7 +309,7 @@ const finishLine = new THREE.Mesh(new THREE.PlaneGeometry(12, 0.22),
   new THREE.MeshBasicMaterial({ color: 0xffffff }));
 finishLine.rotation.x = -Math.PI / 2;
 finishLine.position.set(32, 0.05, 18);
-scene.add(finishLine);
+stadiumRoot.add(finishLine);
 for (let lane = 0; lane < TRACK.lanes; lane++) {
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = 128;
@@ -245,7 +323,7 @@ for (let lane = 0; lane < TRACK.lanes; lane++) {
     new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false }));
   number.rotation.x = -Math.PI / 2;
   number.position.set(27 + lane * TRACK.laneWidth, 0.055, 20);
-  scene.add(number);
+  stadiumRoot.add(number);
 }
 
 // ----- Walls and cover -----
@@ -270,7 +348,7 @@ for (const side of [-1, 1]) {
     walls.push({ x: side * (24.8 + i * 1.6), z: 0, w: 1.6, d: 60, y0: i < 4 ? 0 : top - 0.3, h: top, color: i % 2 ? 0xb5122a : 0xd9dde0 });
   }
   walls.push({ x: side * 37, z: 0, w: 0.4, d: 60, h: 4.6, color: 0x555555 });
-  const bl = new THREE.PointLight(0xffe0b0, 1.2, 14); bl.position.set(side * 53.5, 1.5, 0); scene.add(bl);
+  const bl = new THREE.PointLight(0xffe0b0, 1.2, 14); bl.position.set(side * 53.5, 1.5, 0); stadiumRoot.add(bl);
 }
 const RY = 6; // announcer room floor height
 walls.push(
@@ -295,7 +373,7 @@ walls.push(
   { x: -MAP.halfX, z: 0, w: 1, d: MAP.halfZ * 2, h: 3, color: 0x444444 },
   { x: MAP.halfX, z: 0, w: 1, d: MAP.halfZ * 2, h: 3, color: 0x444444 }
 );
-const roomLight = new THREE.PointLight(0xfff0d0, 1.5, 20); roomLight.position.set(-62.5, 8, 0); scene.add(roomLight);
+const roomLight = new THREE.PointLight(0xfff0d0, 1.5, 20); roomLight.position.set(-62.5, 8, 0); stadiumRoot.add(roomLight);
 
 // ================= CANYON COUGARS STADIUM PROPS =================
 // Every solid piece goes through walls, so movement and attack collision agree.
@@ -350,7 +428,7 @@ for (const side of [-1, 1]) for (const z of [-34, 34]) {
   stadiumBlock(side * 46, z, 0.18, 0.18, 0, 6, 0xd9dde0);
 }
 
-const wallBoxes = [];
+let wallBoxes = [];
 for (const wall of walls) {
   const h = wall.h || 6;
   const mat = new THREE.MeshStandardMaterial({ color: wall.color || 0xd8d0c0 });
@@ -358,7 +436,7 @@ for (const wall of walls) {
   const y0 = wall.y0 || 0;
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(wall.w, h - y0, wall.d), mat);
   mesh.position.set(wall.x, (h + y0) / 2, wall.z);
-  scene.add(mesh);
+  stadiumRoot.add(mesh);
   wallBoxes.push({
     minX: wall.x - wall.w / 2,
     maxX: wall.x + wall.w / 2,
@@ -379,7 +457,7 @@ function stadiumSign(lines, width, height, x, y, z, rotation = 0, background = "
   c.textAlign = "center"; c.textBaseline = "middle";
   const row = (canvas.height - 40) / lines.length;
   lines.forEach((line, i) => {
-    c.fillStyle = "#fff";
+    c.fillStyle = ["#e2ede5", "#f4ead7"].includes(background) ? "#243746" : "#fff";
     let size = Math.min(row * 0.65, 100);
     c.font = "900 " + size + "px sans-serif";
     while (c.measureText(line).width > 940 && size > 10) { size -= 2; c.font = "900 " + size + "px sans-serif"; }
@@ -387,7 +465,7 @@ function stadiumSign(lines, width, height, x, y, z, rotation = 0, background = "
   });
   const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
   const sign = new THREE.Mesh(new THREE.PlaneGeometry(width, height), new THREE.MeshBasicMaterial({ map: texture }));
-  sign.position.set(x, y, z); sign.rotation.y = rotation; scene.add(sign);
+  sign.position.set(x, y, z); sign.rotation.y = rotation; stadiumRoot.add(sign);
   return sign;
 }
 stadiumSign(["COUGAR CONCESSIONS", "CANYON HIGH SCHOOL • COMAL ISD"], 13, 0.8, 54, 3.57, -44.98);
@@ -411,7 +489,7 @@ texLoader.load("logo.png", texture => {
   const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false });
   for (const x of [48.5, 59.5]) {
     const badge = new THREE.Mesh(new THREE.PlaneGeometry(1.7, 1.7), material);
-    badge.position.set(x, 2.1, -52.55); scene.add(badge);
+    badge.position.set(x, 2.1, -52.55); stadiumRoot.add(badge);
   }
 });
 // Footballs with raised white laces, plus training cones and end-zone pylons.
@@ -419,26 +497,26 @@ const footballMaterial = new THREE.MeshStandardMaterial({ color: 0x793c22, rough
 const laceMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff });
 function stadiumFootball(x, y, z) {
   const ball = new THREE.Mesh(new THREE.SphereGeometry(0.25, 14, 10), footballMaterial);
-  ball.scale.set(1, 1, 1.8); ball.position.set(x, y, z); scene.add(ball);
+  ball.scale.set(1, 1, 1.8); ball.position.set(x, y, z); stadiumRoot.add(ball);
   for (let i = -2; i <= 2; i++) {
     const lace = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.035, 0.025), laceMaterial);
-    lace.position.set(x, y + 0.245, z + i * 0.07); scene.add(lace);
+    lace.position.set(x, y + 0.245, z + i * 0.07); stadiumRoot.add(lace);
   }
 }
 for (const [x, z] of sidelineSpots) {
   stadiumFootball(x, 0.96, z - 1.4); stadiumFootball(x, 0.96, z + 1.4);
   const lid = new THREE.Mesh(new THREE.CylinderGeometry(0.47, 0.47, 0.1, 14), laceMaterial);
-  lid.position.set(x, 1.3, z + 4.8); scene.add(lid);
+  lid.position.set(x, 1.3, z + 4.8); stadiumRoot.add(lid);
 }
 const orangeMaterial = new THREE.MeshStandardMaterial({ color: 0xff721c });
 for (const side of [-1, 1]) {
   for (let i = 0; i < 5; i++) {
     const cone = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.65, 10), orangeMaterial);
-    cone.position.set(side * 23, 0.325, -7 + i * 3.5); scene.add(cone);
+    cone.position.set(side * 23, 0.325, -7 + i * 3.5); stadiumRoot.add(cone);
   }
   for (const z of [-40, 40]) {
     const pylon = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.65, 0.3), orangeMaterial);
-    pylon.position.set(side * 20.2, 0.325, z); scene.add(pylon);
+    pylon.position.set(side * 20.2, 0.325, z); stadiumRoot.add(pylon);
   }
 }
 
@@ -502,12 +580,12 @@ const pads = [
 ];
 for (const pd of pads) {
   const m = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, 0.12, 24), new THREE.MeshStandardMaterial({ color: pd.c, emissive: pd.c, emissiveIntensity: 0.9 }));
-  m.position.set(pd.x, pd.y + 0.06, pd.z); scene.add(m);
-  const pl = new THREE.PointLight(pd.c, 1.2, 8); pl.position.set(pd.x, pd.y + 1.2, pd.z); scene.add(pl);
+  m.position.set(pd.x, pd.y + 0.06, pd.z); stadiumRoot.add(m);
+  const pl = new THREE.PointLight(pd.c, 1.2, 8); pl.position.set(pd.x, pd.y + 1.2, pd.z); stadiumRoot.add(pl);
 }
 let padCooldown = 0;
 function checkPads(now) {
-  if (!playing || dead || now < padCooldown) return;
+  if (selectedMap !== "football" || !playing || dead || now < padCooldown) return;
   const p = player.position, feet = p.y - 1;
   for (const pd of pads) {
     if (Math.hypot(p.x - pd.x, p.z - pd.z) < 1.2 && Math.abs(feet - pd.y) < 0.6) {
@@ -531,10 +609,144 @@ function hasLineOfSight(a, b) {
 }
 
 // Places where players and bots can spawn (all clear of walls)
-const SPAWNS = [
+let SPAWNS = [
   [-15, -35], [15, -35], [-15, 35], [15, 35], [0, -30],
   [0, 30], [-6, -12], [6, 12], [-6, 12], [6, -12],
 ];
+
+const footballBoxes = wallBoxes;
+const footballSpawns = SPAWNS;
+const footballLimits = { ...MAP };
+const roundaboutLayout = createRoundaboutLayout();
+const roundaboutRoot = new THREE.Group();
+roundaboutRoot.visible = false;
+scene.add(roundaboutRoot);
+function buildRoundabout() {
+  const materialCache = new Map();
+  const mat = color => {
+    if (!materialCache.has(color)) materialCache.set(color,new THREE.MeshStandardMaterial({color,roughness:0.85}));
+    return materialCache.get(color);
+  };
+  const boxGeo = new THREE.BoxGeometry(1,1,1);
+  function box(x,y,z,w,h,d,color) {const m=new THREE.Mesh(boxGeo,mat(color));m.position.set(x,y,z);m.scale.set(w,h,d);roundaboutRoot.add(m);return m;}
+  for(const b of roundaboutLayout.blocks) {
+    if(['chain','cone','trashcan'].includes(b.kind)) continue;
+    box(b.x,(b.y0+b.h)/2,b.z,b.w,b.h-b.y0,b.d,b.color);
+    if(b.kind==='wall') box(b.x,1.5,b.z,b.w+0.025,0.16,b.d+0.025,0xa71930);
+    if(b.kind==='locker') {
+      // Handles on all four faces keep the rotated banks readable.
+      box(b.x,1.4,b.z,b.w+0.04,0.08,b.d+0.04,0xc4cbd1);
+    }
+  }
+  const tileCanvas=document.createElement('canvas');tileCanvas.width=tileCanvas.height=128;
+  const c=tileCanvas.getContext('2d');c.fillStyle='#bfc8cd';c.fillRect(0,0,128,128);c.fillStyle='#d8dfe1';c.fillRect(0,0,64,64);c.fillRect(64,64,64,64);c.strokeStyle='#a5afb6';c.lineWidth=2;c.strokeRect(0,0,128,128);c.beginPath();c.moveTo(64,0);c.lineTo(64,128);c.moveTo(0,64);c.lineTo(128,64);c.stroke();
+  for(const f of roundaboutLayout.floors) {
+    const texture=new THREE.CanvasTexture(tileCanvas);texture.colorSpace=THREE.SRGBColorSpace;
+    texture.wrapS=texture.wrapT=THREE.RepeatWrapping;texture.repeat.set(f.w/3,f.d/3);
+    const floor=new THREE.Mesh(new THREE.PlaneGeometry(f.w,f.d),new THREE.MeshStandardMaterial({map:texture,roughness:0.85}));
+    floor.rotation.x=-Math.PI/2;floor.position.set(f.x,0.012,f.z);roundaboutRoot.add(floor);
+    const panel=new THREE.Mesh(new THREE.BoxGeometry(Math.min(3,f.w/3),0.06,Math.min(10,f.d/2)),new THREE.MeshBasicMaterial({color:0xfff4da}));
+    panel.position.set(f.x,6.32,f.z);roundaboutRoot.add(panel);
+  }
+  const coneGeo=new THREE.ConeGeometry(0.32,1.05,12),baseGeo=new THREE.BoxGeometry(0.62,0.08,0.62);
+  const bandGeo=new THREE.CylinderGeometry(0.135,0.195,0.2,12);
+  for(const p of roundaboutLayout.cones) {
+    const cone=new THREE.Mesh(coneGeo,mat(0xff771c));cone.position.set(p.x,0.58,p.z);roundaboutRoot.add(cone);
+    const base=new THREE.Mesh(baseGeo,mat(0x262b32));base.position.set(p.x,0.04,p.z);roundaboutRoot.add(base);
+    const band=new THREE.Mesh(bandGeo,mat(0xffffff));band.position.set(p.x,0.6,p.z);roundaboutRoot.add(band);
+  }
+  // Instanced oval links keep the large chain network inexpensive to draw.
+  const links=[];
+  for(const chain of roundaboutLayout.chains) {
+    const dx=chain.b.x-chain.a.x,dz=chain.b.z-chain.a.z,len=Math.hypot(dx,dz),n=Math.ceil(len/0.2);
+    for(let i=0;i<n;i++) {
+      const t=(i+0.5)/n;
+      links.push({x:chain.a.x+dx*t,y:1.02-0.18*Math.sin(Math.PI*t),z:chain.a.z+dz*t,angle:Math.atan2(dx,dz),i});
+    }
+  }
+  const chainMesh=new THREE.InstancedMesh(new THREE.TorusGeometry(0.1,0.022,5,8),mat(0x68757d),links.length);
+  const dummy=new THREE.Object3D();
+  links.forEach((p,i)=>{dummy.position.set(p.x,p.y,p.z);dummy.rotation.set(p.i%2?Math.PI/2:0,p.angle,0);dummy.scale.set(0.65,1,1);dummy.updateMatrix();chainMesh.setMatrixAt(i,dummy.matrix);});
+  roundaboutRoot.add(chainMesh);
+  const trash=new THREE.Mesh(new THREE.CylinderGeometry(0.73,0.65,1.55,24,1,true),mat(0x3b4a53));trash.position.y=0.775;roundaboutRoot.add(trash);
+  const rim=new THREE.Mesh(new THREE.TorusGeometry(0.73,0.075,8,24),mat(0x9fa9ad));rim.rotation.x=Math.PI/2;rim.position.y=1.55;roundaboutRoot.add(rim);
+  const dark=new THREE.Mesh(new THREE.CircleGeometry(0.67,24),mat(0x11171c));dark.rotation.x=-Math.PI/2;dark.position.y=1.3;roundaboutRoot.add(dark);
+  for(let i=0;i<12;i++){const a=i*Math.PI/6;box(Math.cos(a)*0.69,0.7,Math.sin(a)*0.69,0.035,1.25,0.035,0x849197);}
+  const arrow=new THREE.Shape();arrow.moveTo(-0.17,-0.85);arrow.lineTo(0.17,-0.85);arrow.lineTo(0.17,0.25);arrow.lineTo(0.52,0.25);arrow.lineTo(0,0.9);arrow.lineTo(-0.52,0.25);arrow.lineTo(-0.17,0.25);arrow.closePath();
+  const arrowGeo=new THREE.ShapeGeometry(arrow),arrowMat=new THREE.MeshBasicMaterial({color:0x1678ee,side:THREE.DoubleSide});
+  for(const p of roundaboutLayout.arrows) {
+    const group=new THREE.Group(),mesh=new THREE.Mesh(arrowGeo,arrowMat);
+    mesh.rotation.x=-Math.PI/2;group.add(mesh);group.position.set(p.x,0.035,p.z);group.rotation.y=Math.atan2(-p.dx,-p.dz);roundaboutRoot.add(group);
+  }
+  function sign(lines,w,h,x,y,z,rot=0,bg='#a71930') {
+    const mesh=stadiumSign(lines,w,h,x,y,z,rot,bg);roundaboutRoot.add(mesh);return mesh;
+  }
+  function rotate(x,z,q){return q===0?{x,z}:q===1?{x:-z,z:x}:q===2?{x:-x,z:-z}:{x:z,z:-x};}
+  for(const p of roundaboutLayout.signs) {
+    const rot=-p.q*Math.PI/2;
+    sign([p.title,'KEEP RIGHT • FOLLOW BLUE ARROWS'],10,1.1,p.x,4.6,p.z,rot,'#283e50');
+    let t=rotate(5.75,-27,p.q);sign([p.room,'DOOR OPEN'],3.5,0.8,t.x,4.1,t.z,rot-Math.PI/2);
+    t=rotate(23.75,-27,p.q);sign(['WELCOME, COUGARS!','TODAY: RESPECT • LEARN • GROW','CANYON HIGH SCHOOL | COMAL ISD'],8,2.5,t.x,3.25,t.z,rot-Math.PI/2,'#e2ede5');
+    t=rotate(9,-34.32,p.q);sign(['BOOKS • SUPPLIES'],3.1,1.8,t.x,1.4,t.z,rot,'#694c37');
+    // A computer on each teacher desk; monitor faces the open classroom.
+    t=rotate(21,-27,p.q);box(t.x,1.48,t.z,p.q%2?0.85:0.12,0.6,p.q%2?0.12:0.85,0x25333e);
+    const screen=rotate(20.93,-27,p.q);box(screen.x,1.48,screen.z,p.q%2?0.72:0.02,0.46,p.q%2?0.02:0.72,0x5daac2);
+    const clock=rotate(23.73,-21,p.q);sign(['12','9   •   3','6'],0.9,0.9,clock.x,4.5,clock.z,rot-Math.PI/2,'#f4ead7');
+  }
+  sign(['THE ROUNDABOUT','FOLLOW THE BLUE TAPE ↺'],8,1.1,0,5.15,-11.7,0,'#164f90');
+  sign(['KEEP RIGHT','COUNTERCLOCKWISE'],2,1.2,0,2.4,0.8,0,'#164f90');
+}
+buildRoundabout();
+function applyMap(key) {
+  // Remove old-map shots before changing collision or spawn data.
+  stopLandBeam();
+  for (const shots of [bullets, grenades, beams, enemyBullets]) {
+    for (const shot of shots) scene.remove(shot);
+    shots.length = 0;
+  }
+  for (const fx of landBlastEffects) scene.remove(fx.mesh);
+  landBlastEffects.length = 0;
+  clearMines();
+  clearZones();
+  selectedMap=key==='roundabout'?'roundabout':'football';
+  const indoor=selectedMap==='roundabout';
+  stadiumRoot.visible=!indoor;roundaboutRoot.visible=indoor;
+  wallBoxes=indoor?roundaboutLayout.wallBoxes:footballBoxes;
+  SPAWNS=indoor?roundaboutLayout.spawns:footballSpawns;
+  Object.assign(MAP,indoor?roundaboutLayout.limits:footballLimits);
+  scene.background.setHex(indoor?0x202b36:0x87ceeb);
+  camDistTarget=indoor?4.5:8;
+  roundNavCache.clear();
+}
+// Walkable tile graph used only by indoor bots, including the open classroom doors.
+const roundNavCache=new Map();
+const roundWalkCache=new Map();
+function roundWalkable(x,z) {
+  const key = Number.isInteger(x) && Number.isInteger(z) ? x + "," + z : null;
+  if (key && roundWalkCache.has(key)) return roundWalkCache.get(key);
+  const walkable = roundPointClear(x,z);
+  if (key) roundWalkCache.set(key,walkable);
+  return walkable;
+}
+function roundPointClear(x,z) {
+  if(!roundaboutLayout.floors.some(f=>Math.abs(x-f.x)<=f.w/2+0.01&&Math.abs(z-f.z)<=f.d/2+0.01))return false;
+  return !roundaboutLayout.wallBoxes.some(b=>b.y0<2&&b.h>0.1&&x>b.minX-0.62&&x<b.maxX+0.62&&z>b.minZ-0.62&&z<b.maxZ+0.62);
+}
+function roundRoute(from,to) {
+  const key=x=>Math.round(x);
+  function nearest(p){let best=null,dist=Infinity;for(let dx=-3;dx<=3;dx++)for(let dz=-3;dz<=3;dz++){const x=key(p.x)+dx,z=key(p.z)+dz,d=Math.hypot(x-p.x,z-p.z);if(d<dist&&roundWalkable(x,z)){best=[x,z];dist=d;}}return best;}
+  const a=nearest(from),b=nearest(to);if(!a||!b)return [];
+  const start=a.join(','),goal=b.join(','),cacheKey=start+'>'+goal;
+  if(roundNavCache.has(cacheKey))return roundNavCache.get(cacheKey).map(p=>({...p}));
+  const queue=[a],parents=new Map([[start,null]]);let found=false;
+  for(let i=0;i<queue.length&&i<9000;i++){
+    const [x,z]=queue[i],at=x+','+z;if(at===goal){found=true;break;}
+    for(const [dx,dz] of [[1,0],[-1,0],[0,1],[0,-1]]){const nx=x+dx,nz=z+dz,k=nx+','+nz;if(!parents.has(k)&&roundWalkable(nx,nz)){parents.set(k,at);queue.push([nx,nz]);}}
+  }
+  if(!found)return [];
+  const route=[];for(let k=goal;k&&k!==start;k=parents.get(k)){const [x,z]=k.split(',').map(Number);route.push({x,z});}route.reverse();
+  if(roundNavCache.size>100)roundNavCache.clear();roundNavCache.set(cacheKey,route);return route.map(p=>({...p}));
+}
 
 // ================= CHARACTERS =================
 // Change these numbers to balance him. More teachers get added here later.
@@ -1100,7 +1312,7 @@ function updateRoomHud() {
     return;
   }
   const where =
-    net.code === "PUBLIC" ? "PUBLIC LOBBY" : "ROOM CODE: " + net.code + " (share it with friends)";
+    (net.code === "PUBLIC" || net.code === "ROUND") ? "PUBLIC LOBBY" : "ROOM CODE: " + net.code + " (share it with friends)";
   roomHud.textContent = where + "   |   Players: " + (remotes.size + 1);
   roomHud.style.color = "#ffd700";
   roomHud.style.display = "block";
@@ -1447,7 +1659,10 @@ makeMapCard(
   }
 );
 const SOON_BG = "background:linear-gradient(135deg,#1a2244,#0c1124);";
-makeMapCard("MAIN HALLWAY", SOON_BG, "COMING SOON", false);
+makeMapCard("THE ROUNDABOUT", "background:radial-gradient(circle at center,#ff791f 0 7px,#445866 8px 18px,#187cee 19px 22px,transparent 23px),linear-gradient(90deg,transparent 39%,#ced8de 39% 61%,transparent 61%),linear-gradient(0deg,#1d2b38 39%,#ced8de 39% 61%,#1d2b38 61%);", "NEW", true, () => {
+  selectedMap = "roundabout";
+  proceedFromMap();
+});
 makeMapCard("GYMNASIUM", SOON_BG, "COMING SOON", false);
 
 const mapBack = document.createElement("div");
@@ -1470,6 +1685,7 @@ function chooseMode(kind) {
 }
 // Map screen -> the chosen mode
 function proceedFromMap() {
+  applyMap(selectedMap);
   mapOverlay.style.display = "none";
   if (pendingMode === "bots") startBotMode();
   else if (pendingMode === "online") startOnline({ room: "PUBLIC" });
@@ -1605,7 +1821,7 @@ function showPause() {
   const note = "  |  The match keeps going while this menu is open";
   if (mode === "online" && net) {
     pauseInfo.textContent =
-      (net.code === "PUBLIC" ? "Public lobby" : "Room code: " + net.code) +
+      ((net.code === "PUBLIC" || net.code === "ROUND") ? "Public lobby" : "Room code: " + net.code) +
       "  |  Players: " + (remotes.size + 1) + note;
   } else {
     pauseInfo.textContent = "Bot match" + note;
@@ -1761,6 +1977,7 @@ function selectCharacter(key) {
   if (mode === "bots") {
     const s = pickSpawn();
     player.position.set(s[0], 1, s[1]);
+    if (selectedMap === "roundabout") { yaw = Math.atan2(s[0], s[1]); pitch = 0; }
   } else if (!switching) {
     player.position.set(0, 1, 0); // online: the server sends your real spawn point
   }
@@ -2123,6 +2340,7 @@ function clearBots() {
 
 function startBotMode() {
   leaveOnline();
+  buildBadge.textContent = "GAME v17 • " + (selectedMap === "roundabout" ? "ROUNDABOUT" : "STADIUM") + " • BOTS";
   clearBots();
   for (let i = 0; i < BOT_COUNT; i++) makeBot(i);
   kills = 0;
@@ -2290,6 +2508,15 @@ function updateBots(dt, t) {
     }
     mx += -dz * bot.strafe * 0.8;
     mz += dx * bot.strafe * 0.8;
+    if (selectedMap === "roundabout") {
+      if (!bot.routeAt || performance.now() - bot.routeAt > 800) {
+        bot.route = roundRoute(pos, tp); bot.routeAt = performance.now();
+      }
+      while (bot.route?.length && Math.hypot(bot.route[0].x-pos.x, bot.route[0].z-pos.z)<0.45) bot.route.shift();
+      if (bot.route?.length && (!bot.canSee || dist > 10)) {
+        mx=bot.route[0].x-pos.x; mz=bot.route[0].z-pos.z;
+      } else if (!roundWalkable(pos.x+mx*0.6,pos.z+mz*0.6)) {mx=0;mz=0;}
+    }
     const len = Math.hypot(mx, mz) || 1;
     const bslow = bot.slowUntil > t ? 0.5 : 1;
     pos.x += (mx / len) * BOT_SPEED * dt * bslow;
@@ -2594,7 +2821,7 @@ function leaveOnline() {
 function failOnline(msg) {
   const j = net && net.join;
   goToModes();
-  if (j && j.room && j.room !== "PUBLIC") {
+  if (j && j.room && j.room !== "PUBLIC" && j.room !== "ROUND") {
     modeOverlay.style.display = "none";
     privateOverlay.style.display = "flex";
     privMsg.textContent = msg;
@@ -2604,6 +2831,7 @@ function failOnline(msg) {
 }
 
 function startOnline(join) {
+  join = { ...join, map: selectedMap };
   if (SERVER_URL.includes("YOUR-SERVER-NAME")) {
     const msg = "Online isn't set up yet: put your Render address into config.js.";
     modeMsg.textContent = msg;
@@ -2672,11 +2900,12 @@ function handleNet(m) {
   switch (m.t) {
     case "welcome": {
       if (m.v !== GAME_BUILD) {
-        buildBadge.textContent = "GAME v16 / SERVER v" + m.v + " — UPDATE BOTH FILES";
-        failOnline("Version mismatch: game v16 needs server v16. Replace both files and restart the server, then refresh the game.");
+        buildBadge.textContent = "GAME v17 / SERVER v" + m.v + " — UPDATE BOTH FILES";
+        failOnline("Version mismatch: game v17 needs server v17. Replace both files and restart the server, then refresh the game.");
         return;
       }
-      buildBadge.textContent = "GAME v16 / SERVER v16";
+      buildBadge.textContent = "GAME v17 / SERVER v17 • " + (m.map === "roundabout" ? "ROUNDABOUT" : "STADIUM");
+      applyMap(m.map || "football");
       net.id = m.id;
       net.code = m.code;
       for (const p of m.players) addRemote(p);
@@ -2783,6 +3012,7 @@ function handleNet(m) {
       if (m.id === net.id) {
         landStunUntil = 0;
         player.position.set(m.x, 1, m.z);
+        if (selectedMap === "roundabout") { yaw = Math.atan2(m.x, m.z); pitch = 0; }
         playerHealth = m.hp;
         bonusShield = m.bonus || 0;
         ultShield = m.ultShield || 0;
@@ -5028,7 +5258,7 @@ function animate() {
         headY + 0.1,
         player.position.z - Math.cos(yaw) * dist
       );
-      if (!insideWall(p)) break; // pull the camera in if a wall is in the way
+      if (!insideWall(p) && (selectedMap !== "roundabout" || landLineClear({x: player.position.x, y: headY, z: player.position.z}, p))) break; // pull the camera in if a wall is in the way
     }
     camera.position.copy(p);
     camera.lookAt(player.position.x, headY, player.position.z);
@@ -5058,7 +5288,7 @@ function animate() {
         Math.max(0.5, aimY + 1.5 - sp * d),
         player.position.z + Math.cos(yaw) * cp * d
       );
-      if (!insideWall(cpos)) break; // slide the camera forward if a wall is behind you
+      if (!insideWall(cpos) && (selectedMap !== "roundabout" || landLineClear({ x: player.position.x, y: aimY, z: player.position.z }, cpos))) break; // slide the camera forward if a wall is behind you
     }
     camera.position.copy(cpos);
     camera.lookAt(
