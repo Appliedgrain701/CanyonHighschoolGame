@@ -2,7 +2,7 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const SERVER_VERSION = 20; // protocol version; differing versions do not imply a stale deployment
+const SERVER_VERSION = 21; // protocol version; differing versions do not imply a stale deployment
 // Shared arena dimensions: keep game.js and server.js in sync.
 const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
 // Shared procedural Roundabout geometry. X=east, Z=south; north is -Z.
@@ -88,6 +88,7 @@ const CHARS = { mahoney: { health: 275 }, applebee: { health: 200 }, land: { hea
 
 // The SERVER decides damage, so players can't edit their own numbers
 const RULES = {
+  cleetusfield: { dmg: 20, range: 1000 },
   cleetusorb: { dmg: 7, range: 1000 }, // internal server orb ticks only
   landbeam: { dmg: 38, range: 20 }, // damage per second; server-timed channel only
   landblast: { dmg: 52, range: 20 },
@@ -102,7 +103,7 @@ const RULES = {
   beast: { dmg: 65, range: 160 }, // Ms. Applebee ult: grab
   beasttick: { dmg: 5, range: 160 }, // ult: 5 every half second = 10/s while held
   beastend: { dmg: 65, range: 160 }, // ult: final hit when it lets go
-  beezone: { dmg: 15, range: 125, slow: 1500 }, // the sticky zone's one tick of damage + slow
+  beezone: { dmg: 15, range: 125, slow: 1500 }, // repeated sticky damage + slow, rate limited per target
   beeslow: { dmg: 0, range: 125, slow: 600 }, // standing in the zone keeps you slowed
 };
 const SHIELD_BLOCK = 0.85;
@@ -233,7 +234,7 @@ function endBalding(p) {
 }
 
 // ---------- combat ----------
-function respawn(p) {
+function respawn(p, preserveField = false) {
   if (!p.room) return;
   const s = pickSpawn(p.room);
   p.x = s[0];
@@ -244,7 +245,7 @@ function respawn(p) {
   p.balding = false;
   p.sprint = false;
   p.alive = true;
-  p.orbs = [];
+  if (!preserveField) { p.orbs = []; p.fields = []; }
   p.landTarget = 0;
   p.stunnedUntil = 0;
   p.sh = 0;
@@ -262,18 +263,18 @@ function siphonPlayer(room, a) {
 }
 
 function hit(a, m, channelSeconds = 0, blastAuthorized = false, orbAuthorized = false) {
-  if (Date.now() < (a.stunnedUntil || 0)) return;
+  if (!orbAuthorized && Date.now() < (a.stunnedUntil || 0)) return;
   const room = a.room;
   const rule = RULES[m.k];
   const t = room.players.get(m.target);
   if (!rule || !t || t === a) return;
   if (!a.ready || !a.alive || !t.ready || !t.alive) return;
-  if (m.k === "cleetusorb" && (!orbAuthorized || a.char !== "land" || !a.cleetus || channelSeconds <= 0)) return;
+  if ((m.k === "cleetusorb" || m.k === "cleetusfield") && (!orbAuthorized || channelSeconds <= 0)) return;
   if (m.k === "landbeam" && a.cleetus) return;
   // Land can only damage through the server-timed primary channel.
   if (m.k === "landbeam" && (a.char !== "land" || channelSeconds <= 0)) return;
   if (m.k === "landblast" && (a.char !== "land" || !blastAuthorized)) return;
-  if (a.char === "land" && m.k !== "landbeam" && m.k !== "landblast" && m.k !== "cleetusorb") return;
+  if (a.char === "land" && m.k !== "landbeam" && m.k !== "landblast" && m.k !== "cleetusorb" && m.k !== "cleetusfield") return;
   if (Math.hypot(a.x - t.x, a.z - t.z) > rule.range) return;
   if (m.k === "hammer") {
     const now = Date.now();
@@ -318,14 +319,20 @@ function hit(a, m, channelSeconds = 0, blastAuthorized = false, orbAuthorized = 
     if (rule.slow) send(t, { t: "slow", ms: rule.slow });
     return;
   }
+  if (m.k === "beezone") {
+    a.zoneTicks = a.zoneTicks || new Map();
+    const now = Date.now();
+    if (now - (a.zoneTicks.get(t.id) ?? -Infinity) < 950) return;
+    a.zoneTicks.set(t.id,now);
+  }
   if (m.k === "apple") {
     const nowA = Date.now();
     if (nowA - (a.appleAt || 0) < 120) return; // apples can't be spammed faster than a real fire rate
     a.appleAt = nowA;
   }
 
-  let dmg = rule.dmg * ((m.k === "landbeam" || m.k === "cleetusorb") ? Math.min(0.1, channelSeconds) : 1);
-  if (a.char === "applebee" && a.dmgBoostUntil && Date.now() < a.dmgBoostUntil) dmg *= 1.2; // the bees' +20% from Honey Choice
+  let dmg = rule.dmg * ((m.k === "landbeam" || m.k === "cleetusorb" || m.k === "cleetusfield") ? Math.min(0.1, channelSeconds) : 1);
+  if (!orbAuthorized && a.char === "applebee" && a.dmgBoostUntil && Date.now() < a.dmgBoostUntil) dmg *= 1.2; // the bees' +20% from Honey Choice
   if (t.sh) dmg *= 1 - SHIELD_BLOCK;
   const dealt = Math.min(dmg, t.hp + t.bonus + (t.ultShield || 0));
   const ultSoak = Math.min(t.ultShield || 0, dmg);
@@ -371,7 +378,7 @@ function switchTeacher(p, m) {
   const key = CHARS[m.char] ? m.char : "mahoney";
   const ch = CHARS[key];
   p.char = key;
-  p.cleetus = false; p.orbs = [];
+  p.cleetus = false;
   const killer = room.players.get(p.lastHitBy);
   if (killer && killer !== p && killer.ready && Date.now() - p.lastHitAt < LAST_HIT_WINDOW) {
     p.deaths++;
@@ -380,7 +387,7 @@ function switchTeacher(p, m) {
     if (killer.alive) siphonPlayer(room, killer);
   }
   p.max = ch.health;
-  respawn(p); // instant respawn with the new teacher
+  respawn(p, true); // preserve already-fired Land/Cleetus effects
 }
 
 // ---------- messages ----------
@@ -452,11 +459,11 @@ function onMessage(p, m) {
   if (m.t === "cleetus") {
     if (p.char !== "land" || typeof m.active !== "boolean") return;
     p.cleetus = m.active;
-    p.landTarget = 0; p.orbs = [];
+    p.landTarget = 0;
     broadcast(room, {t:"cleetus", id:p.id, active:p.cleetus});
     return;
   }
-  if (m.t === "cleetusfire") { fireCleetusOrb(p, m); return; }
+  if (m.t === "cleetusfire" || m.t === "cleetusburst") { fireCleetusOrb(p, m); return; }
   if (m.t === "landblast") { fireLandBlastServer(p, m); return; }
   if (m.t === "landlock") {
     if (p.char !== "land" || p.cleetus) return;
@@ -603,15 +610,15 @@ function stadiumBlock(x, z, w, d, y0, h, color) {
 }
 const concession = { x: 54, z: -49 };
 // Concession booth: counter, serving window, back wall and striped canopy.
-stadiumBlock(54, -52.8, 14, 0.4, 0, 4, 0xb5122a);
-stadiumBlock(47.2, -49, 0.4, 8, 0, 4, 0xb5122a);
-stadiumBlock(60.8, -49, 0.4, 8, 0, 4, 0xb5122a);
+stadiumBlock(54, -52.8, 14, 0.4, 0, 5, 0xb5122a);
+stadiumBlock(47.2, -49, 0.4, 8, 0, 5, 0xb5122a);
+stadiumBlock(60.8, -49, 0.4, 8, 0, 5, 0xb5122a);
 stadiumBlock(54, -45.2, 14, 0.4, 0, 1.15, 0xb5122a);
 stadiumBlock(54, -44.9, 14.6, 1.1, 1.15, 1.3, 0xe6e7e9);
-stadiumBlock(54, -45.2, 14, 0.4, 3, 4, 0x202126);
-stadiumBlock(54, -49, 15, 9, 4, 4.25, 0x202126);
+stadiumBlock(54, -45.2, 14, 0.4, 4.4, 5, 0x202126);
+stadiumBlock(54, -49, 15, 9, 5, 5.25, 0x202126);
 for (let stripe = 0; stripe < 14; stripe++) {
-  stadiumBlock(47.5 + stripe, -44.4, 1, 2.2, 3, 3.15, stripe % 2 ? 0xffffff : 0xb5122a);
+  stadiumBlock(47.5 + stripe, -44.4, 1, 2.2, 4.4, 4.55, stripe % 2 ? 0xffffff : 0xb5122a);
 }
 // Picnic tables: jumpable tabletop and two low benches.
 const picnicSpots = [[53, -36], [65, -36], [63, 35]];
@@ -758,50 +765,71 @@ function updateLandChannel(p, now) {
 }
 
 // Shared deterministic orb movement: slow floating spheres bounce off solid surfaces.
-function stepCleetusOrb(o, dt, boxes, limits) {
+// Small movement steps prevent fast projectiles tunneling through thin walls.
+function stepCleetusOrb(o, dt, boxes, limits, entities = []) {
   o.life -= dt;
-  const radius = 0.24;
-  for (const axis of ['x', 'y', 'z']) {
-    const velocity = 'v' + axis;
-    const old = o[axis];
-    o[axis] += o[velocity] * dt;
-    const blocked = o.y < radius || o.y > 28 || Math.abs(o.x) > limits.limitX || Math.abs(o.z) > limits.limitZ || boxes.some(b =>
-      o.x > b.minX - radius && o.x < b.maxX + radius && o.z > b.minZ - radius && o.z < b.maxZ + radius && o.y > b.y0 - radius && o.y < b.h + radius);
-    if (blocked) { o[axis] = old; o[velocity] *= -1; o.bounces++; }
+  const steps = Math.max(1, Math.ceil(dt / 0.008));
+  for (let n = 0; n < steps; n++) {
+    const nearby = entities.some(p => Math.hypot(o.x-p.x,o.y-(p.y+0.45),o.z-p.z) < 3.5);
+    const speed = o.kind === 'burst' ? 18 : (o.bounces > 0 || nearby ? 4 : 32);
+    const length = Math.hypot(o.vx,o.vy,o.vz) || 1;
+    o.vx=o.vx/length*speed; o.vy=o.vy/length*speed; o.vz=o.vz/length*speed;
+    for (const axis of ['x','y','z']) {
+      const velocity='v'+axis, old=o[axis];
+      if (!o[velocity]) continue;
+      o[axis]+=o[velocity]*dt/steps;
+      const r=o.kind==='burst' ? .5 : .24;
+      const blocked=o.y<r || o.y>28 || Math.abs(o.x)>limits.limitX || Math.abs(o.z)>limits.limitZ || boxes.some(b=>
+        o.x>b.minX-r && o.x<b.maxX+r && o.z>b.minZ-r && o.z<b.maxZ+r && o.y>b.y0-r && o.y<b.h+r);
+      if (blocked) {o[axis]=old;o[velocity]*=-1;o.bounces++; if(o.kind==='burst') return false;}
+    }
+    if(o.kind==='burst' && entities.some(p=>Math.hypot(o.x-p.x,o.y-(p.y+.45),o.z-p.z)<1.5)) return false;
   }
-  return o.life > 0 && o.bounces <= 10;
+  return o.life>0 && o.bounces<=10;
 }
 
 let orbSequence = 0;
 function fireCleetusOrb(p, m) {
   const now = Date.now();
-  if (p.char !== "land" || !p.cleetus || now - (p.lastOrbAt ?? -Infinity) < 700) return;
+  const burst = m.t === "cleetusburst";
+  const clock = burst ? "lastBurstAt" : "lastOrbAt";
+  if (p.char !== "land" || !p.cleetus || now - (p[clock] ?? -Infinity) < (burst ? 10000 : 700)) return;
   if (![m.dx,m.dy,m.dz].every(Number.isFinite)) return;
   const length = Math.hypot(m.dx,m.dy,m.dz);
   if (length < 0.9 || length > 1.1) return;
-  p.lastOrbAt = now;
-  const o = {id:++orbSequence, owner:p.id, x:p.x, y:p.y+0.45, z:p.z,
-    vx:m.dx/length*6, vy:m.dy/length*6, vz:m.dz/length*6, life:4, bounces:0};
+  p[clock] = now;
+  const o = {id:++orbSequence, owner:p.id, kind:burst ? "burst" : "life", x:p.x, y:p.y+0.45, z:p.z,
+    vx:m.dx/length*6, vy:m.dy/length*6, vz:m.dz/length*6, life:burst ? 1.2 : 4, bounces:0};
   p.orbs = p.orbs || []; p.orbs.push(o);
 }
 function updateCleetusOrbs(p, now) {
   const dt = Math.max(0, Math.min(0.1, (now - (p.orbTickAt ?? now)) / 1000));
   p.orbTickAt = now;
-  if (!p.ready || !p.alive || p.char !== "land" || !p.cleetus) { p.orbs = []; return; }
-  const map = mapForRoom(p.room);
-  p.orbs = (p.orbs || []).filter(o => stepCleetusOrb(o, dt, map.wallBoxes, map.limits));
-  if (now < (p.stunnedUntil || 0) || dt <= 0) return;
-  let healed = 0;
-  for (const target of p.room.players.values()) {
-    if (target === p || !target.ready || !target.alive) continue;
-    const center = {x:target.x,y:target.y+0.45,z:target.z};
-    if (!p.orbs.some(o => Math.hypot(o.x-center.x,o.y-center.y,o.z-center.z) <= 2.5 && landLineClear(o, center, map.wallBoxes))) continue;
-    healed += hit(p, {k:"cleetusorb", target:target.id}, dt, false, true) || 0;
+  if (!p.ready || !p.alive) { p.orbs = []; p.fields=[]; return; }
+  const map=mapForRoom(p.room), targets=[...p.room.players.values()].filter(t=>t!==p&&t.ready&&t.alive);
+  p.fields=(p.fields||[]).filter(f=>now<f.until);
+  p.orbs=(p.orbs||[]).filter(o=>{
+    const live=stepCleetusOrb(o,dt,map.wallBoxes,map.limits,targets);
+    if(!live && o.kind==='burst') p.fields.push({id:o.id,owner:p.id,x:o.x,y:o.y,z:o.z,until:now+5000,nextPulse:now});
+    return live;
+  });
+  if(dt<=0) return;
+  let healed=0;
+  for(const target of targets) {
+    const center={x:target.x,y:target.y+.45,z:target.z};
+    if(p.orbs.some(o=>o.kind!=='burst'&&Math.hypot(o.x-center.x,o.y-center.y,o.z-center.z)<=2.5&&landLineClear(o,center,map.wallBoxes)))
+      healed+=hit(p,{k:'cleetusorb',target:target.id},dt,false,true)||0;
+    for(const f of p.fields) {
+      if(Math.hypot(f.x-center.x,f.y-center.y,f.z-center.z)>5 || !landLineClear(f,center,map.wallBoxes)) continue;
+      hit(p,{k:'cleetusfield',target:target.id},dt,false,true);
+      if(target.alive && now>=f.nextPulse) {
+        target.stunnedUntil=Math.max(target.stunnedUntil||0,now+250);
+        send(target,{t:'landstun',x:target.x,y:target.y,z:target.z,ms:250});
+      }
+    }
   }
-  if (healed > 0 && p.hp < p.max) {
-    p.hp = Math.min(p.max, p.hp + healed);
-    sendShieldState(p);
-  }
+  for(const f of p.fields) if(now>=f.nextPulse) f.nextPulse=now+1000;
+  if(healed>0&&p.hp<p.max){p.hp=Math.min(p.max,p.hp+healed);sendShieldState(p);}
 }
 
 // send everyone's position 20 times a second
@@ -812,10 +840,11 @@ setInterval(() => {
       updateLandChannel(p, Date.now());
       updateCleetusOrbs(p, Date.now());
     }
-    const orbs = [];
-    for (const p of room.players.values()) for (const o of p.orbs || []) orbs.push({id:o.id,owner:o.owner,x:o.x,y:o.y,z:o.z});
-    if (orbs.length || room.hadOrbs) broadcast(room, {t:"orbs", orbs});
-    room.hadOrbs = orbs.length > 0;
+    const orbs = [], fields = [];
+    for (const p of room.players.values()) for (const f of p.fields || []) fields.push(f);
+    for (const p of room.players.values()) for (const o of p.orbs || []) orbs.push({id:o.id,owner:o.owner,kind:o.kind,x:o.x,y:o.y,z:o.z});
+    if (orbs.length || fields.length || room.hadOrbs) broadcast(room, {t:"orbs", orbs, fields});
+    room.hadOrbs = orbs.length + fields.length > 0;
     if (room.players.size < 2) continue;
     const list = [];
     for (const p of room.players.values()) {
