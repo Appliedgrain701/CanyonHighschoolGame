@@ -2,9 +2,85 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const SERVER_VERSION = 16; // protocol version; differing versions do not imply a stale deployment
+const SERVER_VERSION = 17; // protocol version; differing versions do not imply a stale deployment
 // Shared arena dimensions: keep game.js and server.js in sync.
 const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
+// Shared procedural Roundabout geometry. X=east, Z=south; north is -Z.
+function createRoundaboutLayout() {
+  const blocks = [], floors = [], chains = [], cones = [], arrows = [], signs = [], spawns = [];
+  const rotate = (x, z, q) => q === 0 ? { x, z } : q === 1 ? { x: -z, z: x } : q === 2 ? { x: -x, z: -z } : { x: z, z: -x };
+  function block(x,z,w,d,y0,h,color,kind='wall',q=0) {
+    const p=rotate(x,z,q); blocks.push({x:p.x,z:p.z,w:q%2?d:w,d:q%2?w:d,y0,h,color,kind});
+  }
+  function floor(x,z,w,d,q=0) { const p=rotate(x,z,q);floors.push({x:p.x,z:p.z,w:q%2?d:w,d:q%2?w:d}); }
+  function chain(a,b) {
+    chains.push({a,b}); const length=Math.hypot(b.x-a.x,b.z-a.z), n=Math.ceil(length/0.35);
+    for(let i=0;i<n;i++) {
+      const t=(i+0.5)/n;
+      // Visible chain corridor barrier: two chains, anchored by cones.
+      block(a.x+(b.x-a.x)*t,a.z+(b.z-a.z)*t,Math.abs(b.x-a.x)/n+0.09,Math.abs(b.z-a.z)/n+0.09,0,1.15,0x6d7880,'chain');
+    }
+  }
+  function cone(x,z) {cones.push({x,z});block(x,z,0.55,0.55,0,1.15,0xff701f,'cone');}
+  function arrow(x,z,dx,dz,q=0) {const p=rotate(x,z,q),dir=rotate(dx,dz,q);arrows.push({...p,dx:dir.x,dz:dir.z});}
+  floor(0,0,24,24);
+  const names=['NORTH','EAST','SOUTH','WEST'];
+  for(let q=0;q<4;q++) {
+    floor(0,-27,12,30,q); floor(15,-27,18,18,q);
+    block(-6,-27,0.4,30,0,6.4,0xe5e1d8,'wall',q);
+    block(6,-35.5,0.4,13,0,6.4,0xe5e1d8,'wall',q);
+    block(6,-18.5,0.4,13,0,6.4,0xe5e1d8,'wall',q);
+    block(6,-27,0.4,4,3.5,6.4,0xe5e1d8,'wall',q); // 4m open doorway
+    block(0,-42,12.4,0.4,0,6.4,0xe5e1d8,'wall',q);
+    for(const x of [-9,9]) block(x,-12,6,0.4,0,6.4,0xe5e1d8,'wall',q);
+    block(24,-27,0.4,18.4,0,6.4,0xe5e1d8,'wall',q);
+    block(15,-36,18,0.4,0,6.4,0xe5e1d8,'wall',q);
+    block(15,-18,18,0.4,0,6.4,0xe5e1d8,'wall',q);
+    block(8,-29.05,4,0.14,0,3.4,0x955c36,'door',q); // door leaf swung fully into room
+    // Low red wall stripe, rendered separately so it adds no invisible collision.
+    for(const z of [-38,-35,-32,-20,-17]) block(-5.45,z,0.7,1.6,0,2.6,0xa71930,'locker',q);
+    for(const z of [-31.5,-21.5]) for(const x of [11,16,21]) {
+      block(x,z,1.8,1.2,0.95,1.1,0xd0a46f,'desk',q);
+      for(const dx of [-0.7,0.7]) for(const dz of [-0.43,0.43]) block(x+dx,z+dz,0.09,0.09,0,0.95,0x3e4651,'leg',q);
+      block(x-1.4,z,0.65,0.7,0,0.55,0x3b566a,'chair',q);
+      block(x-1.68,z,0.12,0.7,0.55,1.05,0x3b566a,'chair',q);
+    }
+    block(21,-27,2.2,3.2,0,1.15,0x9f704b,'teacherdesk',q);
+    block(9,-34.9,3.5,1,0,2.5,0x8a603f,'bookshelf',q);
+    for(const x of [-2.7,2.7]) {const p=rotate(x,-38,q);spawns.push([p.x,p.z]);}
+    const roomSpawn=rotate(15,-27,q);spawns.push([roomSpawn.x,roomSpawn.z]);
+    const sign=rotate(0,-40.9,q);signs.push({...sign,q,title:names[q]+' HALL',room:'CLASSROOM '+(101+q)});
+    // Right-hand traffic: north-bound entry example runs south on x=-2.7.
+    for(const z of [-35,-29,-23,-17,-11]) {arrow(-2.7,z,0,1,q);arrow(2.7,z,0,-1,q);}
+    arrow(-3,-8.5,-0.45,1,q);arrow(3,-8.5,0,-1,q);
+    let prev=null;
+    for(const z of [-39,-34,-29,-24,-19,-14,-9]) {
+      const p=rotate(0,z,q);cone(p.x,p.z);if(prev)chain(prev,p);prev=p;
+    }
+  }
+  // A trashcan island with a small cone-and-chain ring very close around it.
+  block(0,0,1.55,1.55,0,1.7,0x37434c,'trashcan');
+  for(let i=0;i<12;i++) {
+    const a=i*Math.PI/6,b=(i+1)*Math.PI/6;
+    const p={x:2.5*Math.cos(a),z:-2.5*Math.sin(a)},t={x:2.5*Math.cos(b),z:-2.5*Math.sin(b)};
+    cone(p.x,p.z);chain(p,t);
+    // Tangent (-sin,-cos) is counterclockwise in a north-up overhead view.
+    arrow(4.7*Math.cos(a),-4.7*Math.sin(a),-Math.sin(a),-Math.cos(a));
+  }
+  // Outer guide arcs leave wide openings aligned with each hallway.
+  for(let q=0;q<4;q++) {
+    let prev=null;
+    for(const deg of [35,45,55]) {
+      const a=(deg+q*90)*Math.PI/180,p={x:7.5*Math.cos(a),z:-7.5*Math.sin(a)};
+      cone(p.x,p.z);if(prev)chain(prev,p);prev=p;
+    }
+  }
+  // Ceilings have collision too; camera stays inside rather than looking through walls.
+  for(const f of floors) block(f.x,f.z,f.w,f.d,6.4,6.6,0xf4f1e9,'ceiling');
+  const wallBoxes=blocks.map(b=>({minX:b.x-b.w/2,maxX:b.x+b.w/2,minZ:b.z-b.d/2,maxZ:b.z+b.d/2,y0:b.y0,h:b.h}));
+  return {blocks,floors,chains,cones,arrows,signs,spawns,wallBoxes,limits:{halfX:44,halfZ:44,limitX:41.2,limitZ:41.2}};
+}
+
 const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 30;
 const RESPAWN_MS = 3000;
@@ -46,12 +122,13 @@ const wss = new WebSocketServer({ server });
 
 // ---------- rooms ----------
 const rooms = new Map(); // code -> { code, players: Map(id -> player) }
-function newRoom(code) {
-  const room = { code, players: new Map() };
+function newRoom(code, map = "football") {
+  const room = { code, map, players: new Map() };
   rooms.set(code, room);
   return room;
 }
-newRoom("PUBLIC"); // the free-for-all lobby
+newRoom("PUBLIC", "football");
+newRoom("ROUND", "roundabout");
 
 const LETTERS = "BCDFGHJKLMNPQRSTVWXZ"; // no vowels, so codes never spell words
 function makeCode() {
@@ -83,10 +160,11 @@ function pub(p) {
 }
 
 function pickSpawn(room) {
-  let best = SPAWNS[0];
+  const spawns = room.map === "roundabout" ? roundaboutMap.spawns : SPAWNS;
+  let best = spawns[0];
   let bestD = -1;
   for (let k = 0; k < 6; k++) {
-    const s = SPAWNS[Math.floor(Math.random() * SPAWNS.length)];
+    const s = spawns[Math.floor(Math.random() * spawns.length)];
     let nearest = 999;
     for (const o of room.players.values()) {
       if (o.ready && o.alive) nearest = Math.min(nearest, Math.hypot(s[0] - o.x, s[1] - o.z));
@@ -116,9 +194,10 @@ function join(p, m) {
 
   let room;
   if (m.create) {
-    room = newRoom(makeCode());
+    room = newRoom(makeCode(), m.map === "roundabout" ? "roundabout" : "football");
   } else {
-    const code = String(m.room || "PUBLIC").toUpperCase().slice(0, 8);
+    let code = String(m.room || "PUBLIC").toUpperCase().slice(0, 8);
+    if (code === "PUBLIC" && m.map === "roundabout") code = "ROUND";
     room = rooms.get(code);
     if (!room) return send(p, { t: "error", msg: "Room not found. Check the code and try again." });
   }
@@ -129,7 +208,7 @@ function join(p, m) {
   p.room = room;
   const list = [];
   for (const o of room.players.values()) if (o.ready && o !== p) list.push(pub(o));
-  send(p, { t: "welcome", v: SERVER_VERSION, id: p.id, code: room.code, players: list });
+  send(p, { t: "welcome", v: SERVER_VERSION, id: p.id, code: room.code, map: room.map, players: list });
 }
 
 function leave(p) {
@@ -139,7 +218,7 @@ function leave(p) {
   p.room = null;
   room.players.delete(p.id);
   broadcast(room, { t: "left", id: p.id });
-  if (room.players.size === 0 && room.code !== "PUBLIC") rooms.delete(room.code);
+  if (room.players.size === 0 && room.code !== "PUBLIC" && room.code !== "ROUND") rooms.delete(room.code);
 }
 
 function sendShieldState(p) {
@@ -304,6 +383,7 @@ function onMessage(p, m) {
   if (m.t === "join") return join(p, m);
   const room = p.room;
   if (!room) return;
+  const limits = mapForRoom(room).limits;
 
   if (m.t === "ready") {
     if (p.ready) return;
@@ -351,8 +431,8 @@ function onMessage(p, m) {
     return;
   }
   if (m.t === "st") {
-    p.x = num(m.x, -MAP.limitX, MAP.limitX, p.x);
-    p.z = num(m.z, -MAP.limitZ, MAP.limitZ, p.z);
+    p.x = num(m.x, -limits.limitX, limits.limitX, p.x);
+    p.z = num(m.z, -limits.limitZ, limits.limitZ, p.z);
     p.yaw = num(m.yaw, -1000, 1000, p.yaw);
     p.pitch = num(m.pitch, -2, 2, p.pitch);
     p.sh = p.char !== "land" && m.sh ? 1 : 0;
@@ -369,7 +449,7 @@ function onMessage(p, m) {
     if (p.char === "land") return;
     // the beast owner says where the grabbed players are; tell each grabbed player to move there
     const ids = Array.isArray(m.ids) ? m.ids.slice(0, 11) : [];
-    const hx = num(m.x, -MAP.limitX, MAP.limitX, 0), hy = num(m.y, -2, 30, 1), hz = num(m.z, -MAP.limitZ, MAP.limitZ, 0);
+    const hx = num(m.x, -limits.limitX, limits.limitX, 0), hy = num(m.y, -2, 30, 1), hz = num(m.z, -limits.limitZ, limits.limitZ, 0);
     const nowH = Date.now();
     for (const id of ids) {
       const t = room.players.get(id);
@@ -533,8 +613,12 @@ for (const side of [-1, 1]) for (const z of [-34, 34]) {
 }
 
 const wallBoxes = walls.map(w => ({ minX: w.x-w.w/2, maxX: w.x+w.w/2, minZ: w.z-w.d/2, maxZ: w.z+w.d/2, y0: w.y0 || 0, h: w.h || 6 }));
-function landLineClear(a, b) {
-  for (const box of wallBoxes) {
+const roundaboutMap = createRoundaboutLayout();
+function mapForRoom(room) {
+  return room && room.map === "roundabout" ? roundaboutMap : { wallBoxes, limits: MAP, spawns: SPAWNS };
+}
+function landLineClear(a, b, boxes = wallBoxes) {
+  for (const box of boxes) {
     let lo = 0, hi = 1;
     for (const [axis, min, max] of [["x", box.minX, box.maxX], ["y", box.y0, box.h], ["z", box.minZ, box.maxZ]]) {
       const d = b[axis] - a[axis];
@@ -551,7 +635,7 @@ function landLineClear(a, b) {
   return true;
 }
 
-function landShotTarget(origin, dir, targets, range) {
+function landShotTarget(origin, dir, targets, range, boxes = wallBoxes) {
   let best = null, bestDistance = range;
   for (const target of targets) {
     if (!target.alive) continue;
@@ -561,13 +645,14 @@ function landShotTarget(origin, dir, targets, range) {
     if (along < 0 || along > bestDistance) continue;
     const off = dx * dx + dy * dy + dz * dz - along * along;
     if (off > 0.85 * 0.85) continue;
-    if (!landLineClear(origin, { x: target.x, y: target.y + 0.5, z: target.z })) continue;
+    if (!landLineClear(origin, { x: target.x, y: target.y + 0.5, z: target.z }, boxes)) continue;
     best = target;
     bestDistance = along;
   }
   return best;
 }
 function landKnockback(from, target) {
+  const { wallBoxes: boxes, limits } = mapForRoom(from.room);
   const dx = target.x - from.x, dz = target.z - from.z;
   const length = Math.hypot(dx, dz);
   const ux = length > 0.001 ? dx / length : -Math.sin(from.yaw || 0);
@@ -575,8 +660,8 @@ function landKnockback(from, target) {
   const out = { x: target.x, y: target.y, z: target.z };
   for (let step = 1; step <= 30; step++) {
     const x = target.x + ux * step * 0.1, z = target.z + uz * step * 0.1;
-    if (Math.abs(x) > MAP.limitX || Math.abs(z) > MAP.limitZ) break;
-    if (wallBoxes.some(b => target.y - 1 < b.h && target.y + 1 > b.y0 &&
+    if (Math.abs(x) > limits.limitX || Math.abs(z) > limits.limitZ) break;
+    if (boxes.some(b => target.y - 1 < b.h && target.y + 1 > b.y0 &&
       x > b.minX - 0.6 && x < b.maxX + 0.6 && z > b.minZ - 0.6 && z < b.maxZ + 0.6)) break;
     out.x = x; out.z = z;
   }
@@ -593,12 +678,13 @@ function fireLandBlastServer(p, m) {
   p.lastLandBlast = now; // misses also consume the cooldown
   const origin = { x: p.x, y: p.y + 0.5, z: p.z };
   const targets = [...p.room.players.values()].filter(t => t !== p && t.ready);
-  const target = landShotTarget(origin, dir, targets, 20);
+  const boxes = mapForRoom(p.room).wallBoxes;
+  const target = landShotTarget(origin, dir, targets, 20, boxes);
   let end = { x: origin.x + dir.x * 20, y: origin.y + dir.y * 20, z: origin.z + dir.z * 20 };
   if (target) end = { x: target.x, y: target.y + 0.5, z: target.z };
   else for (let d = 0.1; d <= 20; d += 0.1) {
     const point = { x: origin.x + dir.x * d, y: origin.y + dir.y * d, z: origin.z + dir.z * d };
-    if (!landLineClear(origin, point)) { end = point; break; }
+    if (!landLineClear(origin, point, boxes)) { end = point; break; }
   }
   broadcast(p.room, { t: "fx", id: p.id, k: "ls", a: [origin.x, origin.y, origin.z, end.x, end.y, end.z] });
   if (!target || !(hit(p, { k: "landblast", target: target.id }, 0, true) > 0)) return;
@@ -623,7 +709,7 @@ function updateLandChannel(p, now) {
   const facing = distance < 0.001 ? 1 : (-Math.sin(p.yaw) * Math.cos(p.pitch) * dx + Math.sin(p.pitch) * dy - Math.cos(p.yaw) * Math.cos(p.pitch) * dz) / distance;
   if (now < (p.stunnedUntil || 0) || p.char !== "land" || !p.alive || !p.ready || !t || t === p || !t.alive || !t.ready ||
       now - p.landLockAt > 250 || distance > 20 || facing < Math.cos(Math.PI / 4) ||
-      !landLineClear({ x: p.x, y: p.y + 0.5, z: p.z }, { x: t.x, y: t.y + 0.5, z: t.z })) {
+      !landLineClear({ x: p.x, y: p.y + 0.5, z: p.z }, { x: t.x, y: t.y + 0.5, z: t.z }, mapForRoom(p.room).wallBoxes)) {
     p.landTarget = 0;
     broadcast(p.room, { t: "fx", id: p.id, k: "lb", a: [0] }, p.id);
     return;
