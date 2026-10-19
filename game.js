@@ -1,6 +1,12 @@
 import * as THREE from "three";
 import { SERVER_URL } from "./config.js"; // your Render address lives in config.js
 
+const GAME_BUILD = 14;
+const buildBadge = document.createElement("div");
+buildBadge.textContent = "GAME v14 • BOT / OFFLINE";
+buildBadge.style.cssText = "position:fixed;top:5px;left:8px;z-index:10000;color:#fff;background:#111b;padding:3px 7px;font:11px sans-serif;pointer-events:none";
+document.body.appendChild(buildBadge);
+
 // ================= SCENE =================
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb);
@@ -389,7 +395,7 @@ const characters = {
     // Primary: auto-lock phone beam. Other abilities are disabled.
     primaryRange: 20, primaryDps: 38,
     blastCooldown: 7000, blastDamage: 52, blastRange: 20,
-    desc: "Health: 225<br>Hold Left Click: Phone Beam (38 damage/sec, 20m auto-lock)<br>Right Click: Phone Blast (52 damage, 7s cooldown, +30 shield on hit, 3m knockback + 1s stun)",
+    desc: "Health: 225<br>Hold Left Click: Phone Beam (38 damage/sec, 20m auto-lock)<br>Right Click: Phone Blast (52 damage, 7s cooldown, +30 shield on hit, 3m knockback + 1s stun)<br>Hold Shift: Desk Sprint (1.5x movement speed)",
     ultCost: 100, ultStartCharge: 0, ultPassivePerSec: 0,
     ultPerDamage: 0, ultPerKill: 0,
   },
@@ -497,6 +503,7 @@ let dashFxLevel = 0;
 let dashFrames = 0;
 let kills = 0;
 let deaths = 0;
+let ultShield = 0; // temporary Mahoney ultimate shield, separate from normal shield
 let bonusShield = 0; // blue bonus health from siphon
 const BONUS_SHIELD = 50; // how much you get per elimination
 let camDist = 8; // third person camera distance (scroll wheel changes it)
@@ -581,6 +588,53 @@ function isFirstPerson() {
 function showPlayerModel() {
   player.visible = !dead && !isFirstPerson();
 }
+
+// Rolling standing desk and computer, visible in first/third person and online.
+const deskMaterials = [0x303743, 0x9b653b, 0x121821, 0x63dfff].map(color => new THREE.MeshStandardMaterial({ color }));
+const deskBox = new THREE.BoxGeometry(1, 1, 1);
+const deskWheel = new THREE.CylinderGeometry(0.12, 0.12, 0.09, 12);
+function makeSprintDesk() {
+  const group = new THREE.Group();
+  function box(w, h, d, x, y, z, material) {
+    const m = new THREE.Mesh(deskBox, deskMaterials[material]);
+    m.scale.set(w, h, d); m.position.set(x, y, z); group.add(m);
+  }
+  box(1.25, 0.09, 0.7, 0, 1.2, -0.95, 1); // desktop
+  box(0.12, 1, 0.12, 0, 0.66, -0.95, 0); // adjustable pedestal
+  box(1.05, 0.08, 0.55, 0, 0.2, -0.95, 0);
+  for (const x of [-0.48, 0.48]) for (const z of [-1.17, -0.73]) {
+    const wheel = new THREE.Mesh(deskWheel, deskMaterials[2]);
+    wheel.rotation.z = Math.PI / 2; wheel.position.set(x, 0.12, z); group.add(wheel);
+  }
+  box(0.3, 0.04, 0.2, 0, 1.27, -1.08, 0);
+  box(0.07, 0.2, 0.07, 0, 1.36, -1.08, 0);
+  box(0.65, 0.42, 0.07, 0, 1.61, -1.08, 2); // monitor
+  box(0.57, 0.34, 0.01, 0, 1.61, -1.039, 3); // screen faces player
+  box(0.5, 0.035, 0.17, 0, 1.265, -0.74, 2); // keyboard
+  box(0.1, 0.04, 0.14, 0.43, 1.27, -0.74, 2); // mouse
+  group.visible = false;
+  return group;
+}
+const baldingCanvas = document.createElement("canvas");
+baldingCanvas.width = 512; baldingCanvas.height = 96;
+const baldingContext = baldingCanvas.getContext("2d");
+baldingContext.fillStyle = "rgba(20,10,0,0.85)";
+baldingContext.fillRect(0, 0, 512, 96);
+baldingContext.fillStyle = "#ffdb4d";
+baldingContext.font = "bold 52px sans-serif";
+baldingContext.textAlign = "center";
+baldingContext.fillText("BALDING — ULT", 256, 66);
+const baldingMaterial = new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(baldingCanvas), transparent: true, depthWrite: false });
+function makeBaldingLabel() {
+  const label = new THREE.Sprite(baldingMaterial);
+  label.scale.set(3.2, 0.6, 1); label.position.y = 3.1; label.visible = false;
+  return label;
+}
+let landSprinting = false;
+const localDesk = makeSprintDesk();
+scene.add(localDesk);
+const localBaldingLabel = makeBaldingLabel();
+player.add(localBaldingLabel);
 
 // ================= FIRST-PERSON VIEW + HAMMER + SHIELD =================
 const skinMat = new THREE.MeshStandardMaterial({ color: 0xf1c27d });
@@ -967,10 +1021,11 @@ function updateHealthBar() {
     : "linear-gradient(90deg,#d62839,#ff6b6b)";
   healthFill.style.animation = pct <= 0.25 && playerHealth > 0 ? "lowHp 0.7s infinite" : "none";
   hpTicks.style.backgroundSize = (50 / maxHealth) * 100 + "% 100%";
-  bonusFill.style.width = (bonusShield / BONUS_SHIELD) * 100 + "%";
-  bonusText.textContent = bonusShield > 0 ? Math.ceil(bonusShield) : "";
-  shieldRow.style.opacity = bonusShield > 0 ? "1" : "0.3";
-  bonusBubble.visible = bonusShield > 0;
+  const totalShield = bonusShield + ultShield;
+  bonusFill.style.width = Math.min(100, totalShield / (ultShield > 0 ? BONUS_SHIELD + 250 : BONUS_SHIELD) * 100) + "%";
+  bonusText.textContent = totalShield > 0 ? Math.ceil(totalShield) : "";
+  shieldRow.style.opacity = totalShield > 0 ? "1" : "0.3";
+  bonusBubble.visible = totalShield > 0;
   healthText.innerHTML =
     '<span style="font-size:20px">' + Math.ceil(playerHealth) + '</span><span style="font-size:12px;opacity:.7">&nbsp;/ ' + maxHealth + "</span>";
   hpName.textContent = myName.toUpperCase() + "  \u00b7  " + current.name.toUpperCase();
@@ -1571,13 +1626,16 @@ function siphon() {
 }
 
 function damagePlayer(amount, attacker) {
-  if (dead || ultPhase !== 0) return; // can't be hurt while using the ult
+  if (dead) return; // Balding grants shield, not invincibility
   if (attacker && attacker.name) {
     lastAttacker = attacker; // remembered so switching teachers can credit the kill
     lastAttackerTime = performance.now();
   }
   if (shieldUp) amount *= 1 - current.shieldBlock; // shield blocks 85%
-  // the blue bonus shield soaks damage first
+  const ultSoak = Math.min(ultShield, amount);
+  ultShield -= ultSoak;
+  amount -= ultSoak;
+  // Regular bonus shield is used after the temporary ultimate shield.
   const soak = Math.min(bonusShield, amount);
   bonusShield -= soak;
   amount -= soak;
@@ -1585,6 +1643,7 @@ function damagePlayer(amount, attacker) {
   if (playerHealth <= 0) {
     playerHealth = 0;
     dead = true;
+    endUlt();
     clearMines();
     lastAttacker = null;
     deaths++;
@@ -1777,18 +1836,18 @@ function pickSpawn() {
 function makeNameTag() {
   const c = document.createElement("canvas");
   c.width = 256;
-  c.height = 64;
+  c.height = 96;
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
-  spr.scale.set(2.6, 0.65, 1);
+  spr.scale.set(2.6, 0.975, 1);
   return { spr, c, tex };
 }
 
 // Works for bots and for online players (anything with name, health, tagCanvas, tagTex)
 function drawTag(bot) {
   const g = bot.tagCanvas.getContext("2d");
-  g.clearRect(0, 0, 256, 64);
+  g.clearRect(0, 0, 256, 96);
   g.font = "bold 26px sans-serif";
   g.textAlign = "center";
   g.textBaseline = "top";
@@ -1799,8 +1858,18 @@ function drawTag(bot) {
   g.fillText(bot.name, 128, 2);
   g.fillStyle = "#000";
   g.fillRect(28, 38, 200, 16);
+  const hp = Math.max(0, bot.health);
+  const shield = Math.max(0, bot.bonus || 0) + Math.max(0, bot.ultShield || 0);
+  const capacity = Math.max(1, bot.maxHealth || BOT_HEALTH) + shield;
+  const greenWidth = 196 * Math.min(hp, bot.maxHealth || BOT_HEALTH) / capacity;
+  const blueWidth = 196 * shield / capacity;
   g.fillStyle = "#2ecc40";
-  g.fillRect(30, 40, 196 * Math.max(0, bot.health / (bot.maxHealth || BOT_HEALTH)), 12);
+  g.fillRect(30, 40, greenWidth, 12);
+  g.fillStyle = "#39a9ff";
+  g.fillRect(30 + greenWidth, 40, blueWidth, 12);
+  g.font = "bold 15px sans-serif";
+  g.fillStyle = "#fff";
+  g.fillText(Math.ceil(hp) + " HP" + (shield > 0 ? " + " + Math.ceil(shield) + " SHIELD" : ""), 128, 60);
   bot.tagTex.needsUpdate = true;
 }
 
@@ -2210,6 +2279,8 @@ function addRemote(p) {
     tagCanvas: tag.c,
     tagTex: tag.tex,
     health: p.hp,
+    bonus: p.bonus || 0,
+    ultShield: p.ultShield || 0,
     maxHealth: p.max,
     alive: p.alive !== false,
     tx: p.x,
@@ -2220,6 +2291,13 @@ function addRemote(p) {
     flash: 0,
     swingStart: 0,
   };
+  r.balding = !!p.balding;
+  r.sprinting = !!p.sprint;
+  r.baldingLabel = makeBaldingLabel();
+  mesh.add(r.baldingLabel);
+  r.desk = makeSprintDesk();
+  r.desk.position.y = -1;
+  mesh.add(r.desk);
   remotes.set(p.id, r);
   drawTag(r);
 
@@ -2265,6 +2343,8 @@ function updateRemotes(dt, now) {
   const k = 1 - Math.exp(-dt * 14);
   for (const r of remotes.values()) {
     r.mesh.visible = r.alive;
+    r.baldingLabel.visible = r.alive && r.char === "mahoney" && r.balding;
+    r.desk.visible = r.alive && r.char === "land" && r.sprinting;
     if (!r.alive) {
       r.shieldG.visible = false;
       continue;
@@ -2404,6 +2484,12 @@ function startOnline(join) {
 function handleNet(m) {
   switch (m.t) {
     case "welcome": {
+      if (m.v !== GAME_BUILD) {
+        buildBadge.textContent = "GAME v14 / SERVER v" + m.v + " — UPDATE BOTH FILES";
+        failOnline("Version mismatch: game v14 needs server v14. Replace both files and restart the server, then refresh the game.");
+        return;
+      }
+      buildBadge.textContent = "GAME v14 / SERVER v14";
       net.id = m.id;
       net.code = m.code;
       for (const p of m.players) addRemote(p);
@@ -2433,7 +2519,14 @@ function handleNet(m) {
         r.tz = s.z;
         r.yaw = s.yaw;
         r.shield = !!s.sh;
+        r.balding = !!s.balding;
+        r.sprinting = !!s.sprint;
         if (s.y !== undefined) r.ty = s.y;
+        if (s.hp !== undefined) r.health = s.hp;
+        if (s.bonus !== undefined) r.bonus = s.bonus;
+        if (s.ultShield !== undefined) r.ultShield = s.ultShield;
+        const tagState = [r.health, r.bonus, r.ultShield].join(":");
+        if (tagState !== r.tagState) { drawTag(r); r.tagState = tagState; }
       }
       break;
     }
@@ -2449,6 +2542,7 @@ function handleNet(m) {
       if (m.id === net.id) {
         playerHealth = m.hp;
         bonusShield = m.bonus || 0;
+        ultShield = m.ultShield || 0;
         maxHealth = m.max;
         updateHealthBar();
       } else {
@@ -2456,6 +2550,9 @@ function handleNet(m) {
         if (r) {
           r.health = m.hp;
           r.maxHealth = m.max;
+          r.bonus = m.bonus || 0;
+          r.ultShield = m.ultShield || 0;
+          if (m.balding !== undefined) r.balding = !!m.balding;
           if (m.dealt > 0) r.flash = 0.08;
           drawTag(r);
         }
@@ -2476,6 +2573,7 @@ function handleNet(m) {
       } else if (m.victim === net.id) {
         deaths++;
         dead = true;
+        endUlt();
         clearMines();
         dashFrames = 0;
         addFeed(kName, "You", m.how);
@@ -2500,6 +2598,7 @@ function handleNet(m) {
         player.position.set(m.x, 1, m.z);
         playerHealth = m.hp;
         bonusShield = m.bonus || 0;
+        ultShield = m.ultShield || 0;
         maxHealth = m.max;
         dead = false;
         deathMsg.style.display = "none";
@@ -2509,8 +2608,13 @@ function handleNet(m) {
         const r = remotes.get(m.id);
         if (r) {
           r.alive = true;
+          r.balding = false;
+          r.sprinting = false;
           r.health = m.hp;
           r.maxHealth = m.max;
+          r.bonus = m.bonus || 0;
+          r.ultShield = m.ultShield || 0;
+          if (m.balding !== undefined) r.balding = !!m.balding;
           r.tx = m.x;
           r.tz = m.z;
           r.mesh.position.set(m.x, 1, m.z);
@@ -3030,6 +3134,9 @@ function startUlt() {
   }
   if (ultPhase !== 0 || ultCharge < current.ultCost) return;
   ultPhase = 1; // bald head close-up
+  if (mode === "bots") ultShield = 250;
+  else netSend({ t: "balding", active: true });
+  updateHealthBar();
   ultStart = performance.now();
   beamsLeft = current.ultBeams;
   dashFrames = 0;
@@ -3060,6 +3167,8 @@ function beginAiming() {
 }
 
 function endUlt() {
+  if (ultPhase !== 0) netSend({ t: "balding", active: false });
+  ultShield = 0;
   ultPhase = 0;
   ultCharge = 0;
   showPlayerModel();
@@ -3069,6 +3178,7 @@ function endUlt() {
   ultText.style.display = "none";
   ultVignette.style.display = "none";
   beamsHud.style.display = "none";
+  updateHealthBar();
 }
 
 function spawnBeam(origin, target) {
@@ -4068,6 +4178,7 @@ function abilityDefs() {
       tiles: [
         { key: "LEFT CLICK", name: "Phone Beam", icon: ICON.phones, badge: () => "20m" },
         { key: "RIGHT CLICK", name: "Phone Blast", icon: ICON.phones, cd: () => [lastLandBlast, current.blastCooldown], badge: () => "52" },
+        { key: "SHIFT", name: "Desk Sprint", icon: ICON.dash, badge: () => landSprinting ? "SPRINTING" : "1.5×" },
       ],
       ultIcon: ICON.sun,
     };
@@ -4344,8 +4455,14 @@ function sideChip(capHtml, label) {
 const camChipText = sideChip("7", "CAMERA<br><span style='opacity:.7;font-weight:normal'>3rd person</span>");
 sideChip(svgIcon(ICON.wheel, 16), "ZOOM<br><span style='opacity:.7;font-weight:normal'>scroll wheel</span>");
 const talkChipText = sideChip("`", "TALK<br><span style='opacity:.7;font-weight:normal'>hold to speak</span>");
+const sprintHint = document.createElement("div");
+sprintHint.style.cssText = "color:#65c9ff;font:bold 12px sans-serif;padding:10px;background:#111c;display:none";
+sideKeys.appendChild(sprintHint);
+addEventListener("blur", () => { for (const key in keys) keys[key] = false; mouseHeld = rightHeld = false; });
 let camChipLast = null;
 function updateSideKeys() {
+  sprintHint.style.display = playing && current.kind === "land" ? "block" : "none";
+  sprintHint.textContent = landSprinting ? "SHIFT HELD — SPRINTING 1.5×" : "HOLD SHIFT — DESK SPRINT 1.5×";
   if (camChipLast === firstPerson) return;
   camChipLast = firstPerson;
   camChipText.innerHTML = "CAMERA<br><span style='opacity:.7;font-weight:normal'>" + (firstPerson ? "1st" : "3rd") + " person</span>";
@@ -4376,9 +4493,17 @@ function animate() {
   shieldUp =
     playing && !dead && !paused && current.shieldBlock > 0 && ultPhase === 0 && rightHeld && meleeStart === 0 && !!document.pointerLockElement && now >= landStunUntil;
 
+  landSprinting = current.kind === "land" && playing && !dead && !paused &&
+    (keys.ShiftLeft || keys.ShiftRight) &&
+    now >= holdUntil && now >= landStunUntil;
+  localDesk.visible = !!landSprinting;
+  localDesk.position.set(player.position.x, player.position.y - 1, player.position.z);
+  localDesk.rotation.y = yaw;
+  localBaldingLabel.visible = !dead && ultPhase !== 0;
+
   // Movement (not while the Esc menu is open)
   if (playing && !dead && !paused && ultPhase === 0 && now >= holdUntil && now >= landStunUntil) {
-    const moveSpeed = (shieldUp ? speed * current.shieldSpeed : speed) * (now < slowUntil ? 0.5 : 1);
+    const moveSpeed = (landSprinting ? 1.5 : 1) * (shieldUp ? speed * current.shieldSpeed : speed) * (now < slowUntil ? 0.5 : 1);
     const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
     const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
     if (keys.KeyW) player.position.addScaledVector(forward, moveSpeed);
@@ -4418,6 +4543,7 @@ function animate() {
   updateLandBlastFx(now);
   if (now >= landStunUntil) checkPads(now);
   player.rotation.y = yaw;
+  localDesk.position.set(player.position.x, player.position.y - 1, player.position.z);
 
   // Online: tell the server where you are (20 times a second)
   if (mode === "online" && net && net.ready && playing && !dead && now - lastNetSend > NET_RATE) {
@@ -4430,7 +4556,8 @@ function animate() {
       yaw: +yaw.toFixed(3),
       pitch: +pitch.toFixed(3),
       sh: shieldUp ? 1 : 0,
-      inv: ultPhase !== 0 ? 1 : 0,
+      inv: 0,
+      sprint: landSprinting,
     });
   }
 
