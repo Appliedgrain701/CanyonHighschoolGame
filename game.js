@@ -1,12 +1,12 @@
 import * as THREE from "three";
 import { SERVER_URL } from "./config.js"; // your Render address lives in config.js
 
-const GAME_BUILD = 18;
+const GAME_BUILD = 20;
 // Shared arena dimensions: keep game.js and server.js in sync.
 const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
 
 const buildBadge = document.createElement("div");
-buildBadge.textContent = "GAME v18 • BOT / OFFLINE";
+buildBadge.textContent = "GAME v20 • BOT / OFFLINE";
 buildBadge.style.cssText = "position:fixed;top:5px;left:8px;z-index:10000;color:#fff;background:#111b;padding:3px 7px;font:11px sans-serif;pointer-events:none";
 document.body.appendChild(buildBadge);
 
@@ -155,6 +155,7 @@ const texLoader = new THREE.TextureLoader();
 // Loads a photo onto a material. If the photo is missing, the plain color stays.
 function addPhoto(material, file, repeatX, repeatY) {
   texLoader.load(file, (t) => {
+    if (request !== bodyPictureRequest) return;
     t.colorSpace = THREE.SRGBColorSpace;
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
     t.repeat.set(repeatX, repeatY);
@@ -698,6 +699,7 @@ function buildRoundabout() {
 }
 buildRoundabout();
 function applyMap(key) {
+  clearCleetusOrbs();
   // Remove old-map shots before changing collision or spawn data.
   stopLandBeam();
   for (const shots of [bullets, grenades, beams, enemyBullets]) {
@@ -955,7 +957,9 @@ bodySprite.visible = false;
 player.add(bodySprite);
 
 // Swaps the purple box for a cutout picture, if the picture exists
+let bodyPictureRequest = 0;
 function loadBodyPicture(file) {
+  const request = ++bodyPictureRequest;
   bodySprite.visible = false;
   player.material.visible = true;
   headMesh.visible = true;
@@ -1216,12 +1220,6 @@ statsHud.style.cssText =
   "position:fixed;top:10px;left:16px;color:#fff;font:bold 16px sans-serif;text-shadow:1px 1px 2px #000;";
 document.body.appendChild(statsHud);
 
-// Watermark (in-game HUD: subtle)
-const hudWatermark = document.createElement("div");
-hudWatermark.textContent = "Created by @Anonjeffymous on IG";
-hudWatermark.style.cssText =
-  "position:fixed;right:16px;bottom:4px;z-index:3;pointer-events:none;font:600 11px/1.4 'Segoe UI',Arial,sans-serif;color:#fff;opacity:0.28;letter-spacing:0.5px;text-shadow:0 1px 2px #000;";
-document.body.appendChild(hudWatermark);
 function updateStats() {
   statsHud.textContent = "Kills: " + kills + "   Deaths: " + deaths;
 }
@@ -1470,13 +1468,6 @@ homeTitle.innerHTML =
   '<div style="margin-top:8px;font-size:14px;letter-spacing:6px;opacity:0.65;">TEACHER SHOWDOWN</div>';
 modeOverlay.appendChild(homeTitle);
 
-const menuWatermark = document.createElement("div");
-menuWatermark.innerHTML =
-  'Created by <span style="color:' + THEME.gold + ';">@Anonjeffymous</span> on IG';
-menuWatermark.style.cssText =
-  "position:fixed;left:0;right:0;bottom:18px;text-align:center;font:700 15px/1.4 'Segoe UI',Arial,sans-serif;color:#fff;opacity:0.85;letter-spacing:1px;text-shadow:0 2px 6px rgba(0,0,0,0.6);pointer-events:none;";
-document.body.appendChild(menuWatermark);
-
 // --- name box ---
 const BAD_WORDS = ["fuck", "shit", "bitch", "cunt", "dick", "cock", "pussy", "nigg", "fagg", "slut", "whore", "rape", "nazi", "hitler", "porn", "penis", "vagina", "asshole", "bastard"];
 function nameLooksBad(n) {
@@ -1568,6 +1559,39 @@ modeMsg.style.cssText =
 modeOverlay.appendChild(modeMsg);
 document.body.appendChild(modeOverlay);
 
+// Welcome notice appears once each time the game page is opened.
+const welcomeNoticeStyle = document.createElement("style");
+welcomeNoticeStyle.textContent = `
+#project-welcome::backdrop { background: rgba(3, 7, 18, .82); backdrop-filter: blur(5px); }
+#project-welcome button:focus-visible { outline: 3px solid white; outline-offset: 4px; }
+`;
+document.head.appendChild(welcomeNoticeStyle);
+const welcomeNotice = document.createElement("dialog");
+welcomeNotice.id = "project-welcome";
+welcomeNotice.setAttribute("aria-labelledby", "project-welcome-title");
+welcomeNotice.setAttribute("aria-describedby", "project-welcome-message");
+welcomeNotice.style.cssText = "box-sizing:border-box;width:min(460px,calc(100vw - 32px));padding:32px;border:2px solid #ffcc2f;border-radius:18px;background:linear-gradient(150deg,#18213f,#0b1021);color:white;text-align:center;font-family:Arial,sans-serif;box-shadow:0 20px 70px #0009;";
+const welcomeTitle = document.createElement("h2");
+welcomeTitle.id = "project-welcome-title";
+welcomeTitle.textContent = "Before you play";
+welcomeTitle.style.cssText = "margin:0 0 16px;color:#ffcc2f;font-size:26px;";
+const welcomeMessage = document.createElement("p");
+welcomeMessage.id = "project-welcome-message";
+welcomeMessage.textContent = "This is just a fun little game made for a project. It is not meant to make fun of anyone.";
+welcomeMessage.style.cssText = "margin:0 0 26px;font-size:17px;line-height:1.6;color:#e5e9f5;";
+const welcomeContinue = document.createElement("button");
+welcomeContinue.type = "button";
+welcomeContinue.textContent = "Got it — let's play!";
+welcomeContinue.style.cssText = "border:0;border-radius:9px;padding:13px 22px;background:#ffcc2f;color:#10172c;font:bold 16px Arial,sans-serif;cursor:pointer;";
+welcomeContinue.addEventListener("click", () => { welcomeNotice.close(); nameInput.focus(); });
+welcomeNotice.addEventListener("cancel", e => e.preventDefault());
+welcomeNotice.addEventListener("keydown", e => e.stopPropagation());
+welcomeNotice.addEventListener("keyup", e => e.stopPropagation());
+welcomeNotice.append(welcomeTitle, welcomeMessage, welcomeContinue);
+document.body.appendChild(welcomeNotice);
+queueMicrotask(() => { welcomeNotice.showModal(); welcomeContinue.focus(); });
+
+
 const MODE_ICONS = {
   bots: '<rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 8V4M9 13h.01M15 13h.01M9 17h6"/><circle cx="12" cy="3.5" r="1"/>',
   online: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/>',
@@ -1638,7 +1662,7 @@ function startPopulation() {
         if (m.t !== "population") return;
         for (const [key, label] of Object.entries(populationLabels)) {
           const n = m.counts && m.counts[key];
-          label.textContent = Number.isInteger(n) && n >= 0 ? n + " player" + (n === 1 ? "" : "s") + " online • all rooms" : "Online count unavailable";
+          label.textContent = Number.isInteger(n) && n >= 0 ? n + " player" + (n === 1 ? "" : "s") + " in this online room" : "Online count unavailable";
         }
       } catch (_) {}
     };
@@ -1724,7 +1748,8 @@ function chooseMode(kind) {
   mapSub.textContent = MODE_NAMES[kind] + "  |  PLAYING AS " + myName.toUpperCase();
   modeOverlay.style.display = "none";
   mapOverlay.style.display = "flex";
-  startPopulation();
+  for (const label of Object.values(populationLabels)) label.style.display = kind === "online" ? "block" : "none";
+  if (kind === "online") startPopulation(); else stopPopulation();
 }
 // Map screen -> the chosen mode
 function proceedFromMap() {
@@ -1963,7 +1988,7 @@ for (const key in characters) {
   });
   if (key === "land") {
     const status = document.createElement("div");
-    status.textContent = "PHONE BEAM + PHONE BLAST";
+    status.textContent = "PHONE BEAM + PHONE BLAST + CLEETUS (X)";
     status.style.cssText = "padding:7px 4px;text-align:center;font-size:10px;font-weight:900;letter-spacing:1.5px;color:#ffcc2f;background:#080d1c;";
     card.appendChild(status);
   }
@@ -2001,6 +2026,7 @@ function selectCharacter(key) {
 
   stopLandBeam();
   landStunUntil = 0;
+  cleetusMode = false; abKind = ""; clearCleetusOrbs();
   current = characters[key];
   player.material.color.setHex(current.color);
   loadBodyPicture(current.picture);
@@ -2206,8 +2232,10 @@ addEventListener("keydown", (e) => {
   if (e.code === "Backquote" && !e.repeat && playing) startVoice();
 
   if (!playing || dead || paused || ultPhase !== 0 || e.repeat || performance.now() < holdUntil || performance.now() < landStunUntil) return;
-  // Mr. Land has no active abilities yet.
-  if (current.kind === "land") return;
+  if (current.kind === "land") {
+    if (e.code === "KeyX") toggleCleetus();
+    return;
+  }
   if (e.code === "KeyQ") {
     if (current.kind !== "applebee") dash();
     else useHoney();
@@ -2434,7 +2462,7 @@ function clearBots() {
 
 function startBotMode() {
   leaveOnline();
-  buildBadge.textContent = "GAME v18 • " + (selectedMap === "roundabout" ? "ROUNDABOUT" : "STADIUM") + " • BOTS";
+  buildBadge.textContent = "GAME v20 • " + (selectedMap === "roundabout" ? "ROUNDABOUT" : "STADIUM") + " • BOTS";
   clearBots();
   for (let i = 0; i < BOT_COUNT; i++) makeBot(i);
   kills = 0;
@@ -2499,7 +2527,7 @@ function damageBot(bot, amount, how, attacker) {
       addUltCharge(current.ultPerKill);
       refillApples();
       hitmarker(true);
-      siphon();
+      if (how !== "cleetusorb") siphon();
       showKillBanner(bot.name, how); // elimination banner
       addFeed("You", bot.name, how);
     } else if (attacker && attacker.name) {
@@ -2799,6 +2827,7 @@ function addRemote(p) {
     flash: 0,
     swingStart: 0,
   };
+  r.cleetus = !!p.cleetus;
   r.balding = !!p.balding;
   r.sprinting = !!p.sprint;
   r.baldingLabel = makeBaldingLabel();
@@ -2822,8 +2851,10 @@ function setRemoteChar(r, key) {
   }
   r.mesh.material.visible = true;
   r.head.visible = true;
-  texLoader.load(characters[key].picture, (t) => {
-    if (remotes.get(r.id) !== r || r.char !== key) return;
+  const picture = key === "land" && r.cleetus ? "Cleetus.png" : characters[key].picture;
+  r.picture = picture;
+  texLoader.load(picture, (t) => {
+    if (remotes.get(r.id) !== r || r.char !== key || r.picture !== picture) return;
     t.colorSpace = THREE.SRGBColorSpace;
     const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, alphaTest: 0.05 }));
     spr.scale.set(BODY_HEIGHT * (t.image.width / t.image.height), BODY_HEIGHT, 1);
@@ -2838,6 +2869,7 @@ function setRemoteChar(r, key) {
 function removeRemote(id) {
   const r = remotes.get(id);
   if (!r) return;
+  clearCleetusOrbs(id);
   if (r.landBeam) scene.remove(r.landBeam);
   scene.remove(r.mesh);
   scene.remove(r.shieldG);
@@ -2893,6 +2925,7 @@ function updateRemotes(dt, now) {
 }
 
 function leaveOnline() {
+  setCleetusMode(false); clearCleetusOrbs();
   closeChat(false); chatLog.textContent = ""; chatPanel.style.display = "none";
   const n = net;
   net = null;
@@ -2993,6 +3026,12 @@ function startOnline(join) {
 
 function handleNet(m) {
   switch (m.t) {
+    case "cleetus": {
+      if (m.id === net.id) setCleetusMode(!!m.active);
+      else { const r = remotes.get(m.id); if (r) { r.cleetus = !!m.active; setRemoteChar(r, r.char); } }
+      return;
+    }
+    case "orbs": syncCleetusOrbs(m.orbs); return;
     case "chat":
       addChatMessage(m.name, m.text);
       return;
@@ -3001,11 +3040,11 @@ function handleNet(m) {
       return;
     case "welcome": {
       if (m.v !== GAME_BUILD) {
-        buildBadge.textContent = "GAME v18 / SERVER v" + m.v + " — UPDATE BOTH FILES";
-        failOnline("Version mismatch: game v18 needs server v18. Replace both files and restart the server, then refresh the game.");
+        buildBadge.textContent = "GAME v20 / SERVER v" + m.v + " — UPDATE BOTH FILES";
+        failOnline("Version mismatch: game v20 needs server v20. Replace both files and restart the server, then refresh the game.");
         return;
       }
-      buildBadge.textContent = "GAME v18 / SERVER v18 • " + (m.map === "roundabout" ? "ROUNDABOUT" : "STADIUM");
+      buildBadge.textContent = "GAME v20 / SERVER v20 • " + (m.map === "roundabout" ? "ROUNDABOUT" : "STADIUM");
       applyMap(m.map || "football");
       net.id = m.id;
       net.code = m.code;
@@ -3038,6 +3077,7 @@ function handleNet(m) {
         r.shield = !!s.sh;
         r.balding = !!s.balding;
         r.sprinting = !!s.sprint;
+        if (r.cleetus !== !!s.cleetus) { r.cleetus = !!s.cleetus; setRemoteChar(r, r.char); }
         if (s.y !== undefined) r.ty = s.y;
         if (s.hp !== undefined) r.health = s.hp;
         if (s.bonus !== undefined) r.bonus = s.bonus;
@@ -3085,7 +3125,7 @@ function handleNet(m) {
         refillApples();
         hitmarker(true);
         showKillBanner(vName, m.how); // elimination banner
-        addFeedText("SIPHON: full health + " + BONUS_SHIELD + " blue shield");
+        if (!cleetusMode) addFeedText("SIPHON: full health + " + BONUS_SHIELD + " blue shield");
         addFeed("You", vName, m.how);
       } else if (m.victim === net.id) {
         deaths++;
@@ -3111,6 +3151,7 @@ function handleNet(m) {
     }
     case "respawn": {
       if (m.id === net.id) {
+        setCleetusMode(m.char === "land" && !!m.cleetus);
         landStunUntil = 0;
         player.position.set(m.x, 1, m.z);
         if (selectedMap === "roundabout") { yaw = Math.atan2(m.x, m.z); pitch = 0; }
@@ -3126,6 +3167,7 @@ function handleNet(m) {
         const r = remotes.get(m.id);
         if (r) {
           r.alive = true;
+          r.cleetus = !!m.cleetus;
           r.balding = false;
           r.sprinting = false;
           r.health = m.hp;
@@ -3137,7 +3179,7 @@ function handleNet(m) {
           r.tz = m.z;
           r.mesh.position.set(m.x, 1, m.z);
           r.ty = 1;
-          if (m.char && r.char !== m.char) setRemoteChar(r, m.char);
+          if (m.char) setRemoteChar(r, m.char);
           drawTag(r);
         }
       }
@@ -3261,6 +3303,118 @@ function landLineClear(a, b) {
   return true;
 }
 
+// Shared deterministic orb movement: slow floating spheres bounce off solid surfaces.
+function stepCleetusOrb(o, dt, boxes, limits) {
+  o.life -= dt;
+  const radius = 0.24;
+  for (const axis of ['x', 'y', 'z']) {
+    const velocity = 'v' + axis;
+    const old = o[axis];
+    o[axis] += o[velocity] * dt;
+    const blocked = o.y < radius || o.y > 28 || Math.abs(o.x) > limits.limitX || Math.abs(o.z) > limits.limitZ || boxes.some(b =>
+      o.x > b.minX - radius && o.x < b.maxX + radius && o.z > b.minZ - radius && o.z < b.maxZ + radius && o.y > b.y0 - radius && o.y < b.h + radius);
+    if (blocked) { o[axis] = old; o[velocity] *= -1; o.bounces++; }
+  }
+  return o.life > 0 && o.bounces <= 10;
+}
+
+// Cleetus is a form of Land, not a teacher switch: no teleport, refill, or cooldown reset.
+let cleetusMode = false, lastCleetusShot = -Infinity;
+const cleetusOrbs = new Map();
+let localOrbSequence = 0;
+const orbGeometry = new THREE.SphereGeometry(0.24, 16, 12);
+const orbMaterial = new THREE.MeshBasicMaterial({color:0xff2858});
+const orbHaloMaterial = new THREE.MeshBasicMaterial({color:0xdc143c,transparent:true,opacity:0.18,depthWrite:false});
+const cleetusVignette = document.createElement('div');
+cleetusVignette.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:3;opacity:0;transition:opacity .45s ease;box-shadow:inset 0 0 65px 18px rgba(220,20,60,.7);border:2px solid rgba(220,20,60,.65);background:radial-gradient(ellipse at center,transparent 55%,rgba(160,0,30,.16) 100%);';
+const cleetusLabel = document.createElement('div');
+cleetusLabel.textContent = 'CLEETUS MODE';
+cleetusLabel.style.cssText = 'position:fixed;top:calc(50% + 30px);left:50%;transform:translateX(-50%);color:#dc143c;font:900 16px sans-serif;letter-spacing:2px;text-shadow:0 1px 3px #000,0 0 8px #000;z-index:5;pointer-events:none;display:none;';
+document.body.append(cleetusVignette,cleetusLabel);
+function updateCleetusOverlay() {
+  const active = cleetusMode && current.kind === 'land' && playing && !dead && !paused;
+  cleetusVignette.style.opacity = active ? '1' : '0';
+  cleetusLabel.style.display = active ? 'block' : 'none';
+}
+function clearCleetusOrbs(owner) {
+  for (const [id,o] of cleetusOrbs) if (owner === undefined || o.owner === owner) {
+    scene.remove(o.mesh); cleetusOrbs.delete(id);
+  }
+}
+function setCleetusMode(active) {
+  active = !!active && current.kind === 'land';
+  if (active !== cleetusMode) {
+    cleetusMode = active;
+    stopLandBeam(); mouseHeld = false;
+    clearCleetusOrbs(mode === 'online' ? net?.id : 'local');
+    loadBodyPicture(active ? 'Cleetus.png' : current.picture);
+    abKind = ''; // rebuild the primary icon text for this form
+  }
+  updateCleetusOverlay();
+}
+function toggleCleetus() {
+  const active = !cleetusMode;
+  setCleetusMode(active);
+  if (mode === 'online') netSend({t:'cleetus',active});
+}
+function makeCleetusOrb(o) {
+  const mesh = new THREE.Mesh(orbGeometry,orbMaterial);
+  const halo = new THREE.Mesh(orbGeometry,orbHaloMaterial); halo.scale.setScalar(2.3); mesh.add(halo);
+  mesh.position.set(o.x,o.y,o.z); scene.add(mesh);
+  return {...o,mesh};
+}
+function syncCleetusOrbs(orbs) {
+  if (mode !== 'online' || !Array.isArray(orbs)) return;
+  const live = new Set();
+  for (const o of orbs) {
+    live.add(o.id);
+    let item = cleetusOrbs.get(o.id);
+    if (!item) { item = makeCleetusOrb(o); cleetusOrbs.set(o.id,item); }
+    item.x=o.x; item.y=o.y; item.z=o.z;
+  }
+  for (const [id,o] of cleetusOrbs) if (!live.has(id)) {scene.remove(o.mesh);cleetusOrbs.delete(id);}
+}
+function fireCleetusOrbLocal() {
+  const now = performance.now();
+  if (!cleetusMode || chatOpen || now-lastCleetusShot < 750) return;
+  lastCleetusShot = now;
+  const eye = player.position.clone(); eye.y += 0.45;
+  const dir = aimDirection(eye);
+  if (mode === 'online') netSend({t:'cleetusfire',dx:dir.x,dy:dir.y,dz:dir.z});
+  else {
+    const id = ++localOrbSequence;
+    cleetusOrbs.set(id,makeCleetusOrb({id,owner:'local',x:eye.x,y:eye.y,z:eye.z,vx:dir.x*6,vy:dir.y*6,vz:dir.z*6,life:4,bounces:0}));
+  }
+  tone(180,90,.12,'sine',.07,0);
+}
+function updateCleetusOrbsLocal(dt) {
+  if (mode === 'online') {
+    for (const o of cleetusOrbs.values()) {
+      const k=1-Math.exp(-dt*24);
+      o.mesh.position.x += (o.x-o.mesh.position.x)*k;
+      o.mesh.position.y += (o.y-o.mesh.position.y)*k;
+      o.mesh.position.z += (o.z-o.mesh.position.z)*k;
+    }
+    return;
+  }
+  if (!playing || dead || !cleetusMode || current.kind !== 'land') {clearCleetusOrbs();return;}
+  if (paused) return;
+  for (const [id,o] of cleetusOrbs) {
+    if (!stepCleetusOrb(o,dt,wallBoxes,MAP)) {scene.remove(o.mesh);cleetusOrbs.delete(id);continue;}
+    o.mesh.position.set(o.x,o.y,o.z);
+  }
+  if (performance.now() < landStunUntil) return;
+  let healed=0;
+  for (const bot of bots) {
+    if (!bot.alive) continue;
+    const center={x:bot.mesh.position.x,y:bot.mesh.position.y+0.45,z:bot.mesh.position.z};
+    if (![...cleetusOrbs.values()].some(o=>Math.hypot(o.x-center.x,o.y-center.y,o.z-center.z)<=2.5 && landLineClear(o,center))) continue;
+    const dealt=Math.min(bot.health,7*dt);
+    damageBot(bot,dealt,'cleetusorb','player'); healed+=dealt;
+  }
+  if (healed>0) {playerHealth=Math.min(maxHealth,playerHealth+healed);updateHealthBar();}
+}
+
 const landPhoneMaterial = new THREE.SpriteMaterial({ map: phoneTexture, transparent: true, alphaTest: 0.05, depthWrite: false });
 function makeLandBeam() {
   const group = new THREE.Group();
@@ -3374,7 +3528,7 @@ function fireLandBlast() {
 }
 
 function updateLandBeam(dt, now) {
-  const active = current.kind === "land" && playing && !dead && !paused && mouseHeld &&
+  const active = current.kind === "land" && !cleetusMode && playing && !dead && !paused && mouseHeld &&
     !!document.pointerLockElement && now >= holdUntil && now >= landStunUntil;
   const forward = new THREE.Vector3(-Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
   const eye = player.position.clone().add(new THREE.Vector3(0, 0.5, 0));
@@ -3407,7 +3561,7 @@ function updateLandBeam(dt, now) {
   }
   for (const r of remotes.values()) {
     const target = r.landTarget === net?.id ? { mesh: player, alive: !dead } : remotes.get(r.landTarget);
-    const show = r.char === "land" && r.alive && target?.alive && now - r.landBeamAt < 300 &&
+    const show = r.char === "land" && !r.cleetus && r.alive && target?.alive && now - r.landBeamAt < 300 &&
       r.mesh.position.distanceTo(target.mesh.position) <= characters.land.primaryRange;
     if (show) {
       if (!r.landBeam) r.landBeam = makeLandBeam();
@@ -3488,7 +3642,7 @@ function tryShoot() {
   if (!playing || dead || paused || ultPhase !== 0 || shieldUp || meleeStart > 0 || performance.now() < holdUntil || performance.now() < landStunUntil) return;
   if (!document.pointerLockElement) return;
   const now = performance.now();
-  if (current.kind === "land") return; // No primary attack implemented
+  if (current.kind === "land") { if (cleetusMode) fireCleetusOrbLocal(); return; }
   if (now - lastShot < current.fireDelay) return;
   if (current.kind === "applebee") {
     if (appleReload > 0 || appleAmmo <= 0) return;
@@ -4709,7 +4863,7 @@ const ICON = {
   mine: '<circle cx="12" cy="13" r="4.5"/><path d="M12 3v3M12 20v3M3 13h3M18 13h3M6 7l2 2M16 17l2 2M18 7l-2 2M8 17l-2 2"/>',
   hive: '<ellipse cx="12" cy="7" rx="4" ry="2.5"/><ellipse cx="12" cy="12" rx="6" ry="3"/><ellipse cx="12" cy="17.5" rx="5" ry="3"/>',
   bee: '<ellipse cx="12" cy="14" rx="5" ry="6"/><path d="M7 6c-3-3-5 2-2 4M17 6c3-3 5 2 2 4M9 11h6M9 15h6"/>',
-  honey: '<path d="M12 3l7 9-7 9-7-9z"/><path d="M12 3v18"/>',
+  honey: '<path d="M12 3l7 9-7 9-7-9z"/><path d="M12 3v20"/>',
   sun: '<circle cx="12" cy="12" r="5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
   camera: '<path d="M3 8h4l2-3h6l2 3h4v11H3z"/><circle cx="12" cy="13" r="3.5"/>',
   wheel: '<rect x="7" y="2" width="10" height="20" rx="5"/><path d="M12 6v4"/>',
@@ -4721,7 +4875,7 @@ function abilityDefs() {
     return {
       accent: "#65c9ff",
       tiles: [
-        { key: "LEFT CLICK", name: "Phone Beam", icon: ICON.phones, badge: () => "20m" },
+        { key: "LEFT CLICK", name: cleetusMode ? "Life Orbs" : "Phone Beam", icon: ICON.phones, badge: () => cleetusMode ? "7 DPS + HEAL" : "20m" },
         { key: "RIGHT CLICK", name: "Phone Blast", icon: ICON.phones, cd: () => [lastLandBlast, current.blastCooldown], badge: () => "52" },
         { key: "SHIFT", name: "Desk Sprint", icon: ICON.dash, badge: () => landSprinting ? "SPRINTING" : "1.5×" },
       ],
@@ -4944,8 +5098,13 @@ function updateAbilityBar(now) {
     e.inner.style.opacity = ready || active ? "1" : "0.6";
   }
 
-  abUlt.uw.style.display = current.kind === "land" ? "none" : "block";
-  if (current.kind === "land") return;
+  abUlt.uw.style.display = "block";
+  if (current.kind === "land") {
+    abUlt.utext.textContent = cleetusMode ? "MR. LAND" : "CLEETUS";
+    abUlt.ring.style.background = cleetusMode ? "#dc143c" : "#ffd54a";
+    abUlt.uw.title = "X: switch form • always ready • no cooldown";
+    return;
+  }
 
   // ult icon: ring fills as it charges, spins rainbow when ready
   const pct = Math.max(0, Math.min(100, Math.floor((ultCharge / current.ultCost) * 100)));
@@ -5071,7 +5230,7 @@ function animate() {
     player.position.z = Math.max(-MAP.limitZ, Math.min(MAP.limitZ, player.position.z));
 
     // Hold the mouse to keep shooting
-    if (mouseHeld && current.kind !== "land") tryShoot();
+    if (mouseHeld && (current.kind !== "land" || cleetusMode)) tryShoot();
   }
   pushOutOfWalls(player.position, player.position.y - 1, STEP_HEIGHT);
   physicsStep(dt, playing && !dead && !paused && ultPhase === 0 && now >= holdUntil && now >= landStunUntil);
@@ -5329,6 +5488,8 @@ function animate() {
     }
   }
 
+  updateCleetusOrbsLocal(dt);
+  updateCleetusOverlay();
   updateAbilityBar(now);
   updateSideKeys();
 
