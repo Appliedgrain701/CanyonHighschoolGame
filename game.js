@@ -386,7 +386,9 @@ const characters = {
     picture: "mrland.png",
     health: 225,
     speed: 0.15,
-    // Appearance only for now; no attacks or abilities.
+    // Primary: auto-lock phone beam. Other abilities are disabled.
+    primaryRange: 10, primaryDps: 20,
+    desc: "Health: 225<br>Hold Left Click: Phone Beam (20 damage/sec, 10m auto-lock)<br>Other abilities: none",
     ultCost: 100, ultStartCharge: 0, ultPassivePerSec: 0,
     ultPerDamage: 0, ultPerKill: 0,
   },
@@ -1458,7 +1460,7 @@ for (const key in characters) {
   });
   if (key === "land") {
     const status = document.createElement("div");
-    status.textContent = "UNDER DEVELOPMENT";
+    status.textContent = "PHONE BEAM · 20 DPS · 10m";
     status.style.cssText = "padding:7px 4px;text-align:center;font-size:10px;font-weight:900;letter-spacing:1.5px;color:#ffcc2f;background:#080d1c;";
     card.appendChild(status);
   }
@@ -1494,6 +1496,7 @@ function selectCharacter(key) {
   if (switching && mode === "bots") creditSwitchKill();
   lastAttacker = null;
 
+  stopLandBeam();
   current = characters[key];
   player.material.color.setHex(current.color);
   loadBodyPicture(current.picture);
@@ -1687,7 +1690,7 @@ addEventListener("mousemove", (e) => {
   }
 });
 
-// Mr. Land has no mouse attacks while his abilities are being designed.
+// Primary attacks are held with the left mouse button.
 addEventListener("mousedown", (e) => {
   if (!playing || dead || paused || !document.pointerLockElement) return;
   if (current.kind === "applebee" && honeyChoiceUntil > performance.now()) {
@@ -1709,7 +1712,6 @@ addEventListener("mousedown", (e) => {
     fireBeam();
     return;
   }
-  if (current.kind === "land") return; // no primary fire yet
   mouseHeld = true;
   tryShoot();
 });
@@ -1909,7 +1911,7 @@ function isAlive(e) {
 // attacker = "player", a bot, or nothing. how = "banned", "beam", or nothing.
 function damageBot(bot, amount, how, attacker) {
   if (!bot.alive) return;
-  if (attacker === "player" && honeyBoostUntil > performance.now()) amount *= 1 + HONEY.boostPct; // the bees' +20%
+  if (attacker === "player" && current.kind === "applebee" && honeyBoostUntil > performance.now()) amount *= 1 + HONEY.boostPct; // the bees' +20%
   const dealt = Math.min(amount, bot.health);
   if (attacker === "player") {
     addUltCharge(dealt * current.ultPerDamage);
@@ -2248,6 +2250,7 @@ function setRemoteChar(r, key) {
 function removeRemote(id) {
   const r = remotes.get(id);
   if (!r) return;
+  if (r.landBeam) scene.remove(r.landBeam);
   scene.remove(r.mesh);
   scene.remove(r.shieldG);
   clearRemoteMines(id);
@@ -2309,6 +2312,7 @@ function leaveOnline() {
     } catch (e) {}
   }
   for (const r of remotes.values()) {
+    if (r.landBeam) scene.remove(r.landBeam);
     scene.remove(r.mesh);
     scene.remove(r.shieldG);
   }
@@ -2538,7 +2542,11 @@ function handleFx(m) {
   const r = remotes.get(m.id);
   if (!r) return;
   const a = m.a || [];
-  if (m.k === "p") fireBurst(a[0], a[1], a[2], a[3], characters.mahoney, true, a[4] === undefined ? 1 : a[4]);
+  if (m.k === "lb") {
+    r.landTarget = a[0];
+    r.landBeamAt = performance.now();
+  }
+  else if (m.k === "p") fireBurst(a[0], a[1], a[2], a[3], characters.mahoney, true, a[4] === undefined ? 1 : a[4]);
   else if (m.k === "g") spawnGrenade(a[0], a[1], a[2], a[3], a[4], a[5], true);
   else if (m.k === "b") spawnBeam(new THREE.Vector3(a[0], a[1], a[2]), new THREE.Vector3(a[3], a[4], a[5]));
   else if (m.k === "u") addFeedText(r.name + " is BALDING!");
@@ -2589,6 +2597,97 @@ function handleFx(m) {
     boomAt(new THREE.Vector3(a[0], a[1] + 0.5, a[2]), a[3], 0xffd23f);
   }
 
+}
+
+// ================= MR. LAND: AUTO-LOCK PHONE BEAM =================
+function landLineClear(a, b) {
+  for (const box of wallBoxes) {
+    let lo = 0, hi = 1;
+    for (const [axis, min, max] of [["x", box.minX, box.maxX], ["y", box.y0, box.h], ["z", box.minZ, box.maxZ]]) {
+      const d = b[axis] - a[axis];
+      if (Math.abs(d) < 1e-8) {
+        if (a[axis] < min || a[axis] > max) { lo = 2; break; }
+      } else {
+        const t1 = (min - a[axis]) / d, t2 = (max - a[axis]) / d;
+        lo = Math.max(lo, Math.min(t1, t2));
+        hi = Math.min(hi, Math.max(t1, t2));
+      }
+    }
+    if (lo <= hi && hi > 0 && lo < 1) return false;
+  }
+  return true;
+}
+
+const landPhoneMaterial = new THREE.SpriteMaterial({ map: phoneTexture, transparent: true, alphaTest: 0.05, depthWrite: false });
+function makeLandBeam() {
+  const group = new THREE.Group();
+  for (let i = 0; i < 40; i++) group.add(new THREE.Sprite(landPhoneMaterial));
+  group.visible = false;
+  scene.add(group);
+  return group;
+}
+const landBeam = makeLandBeam();
+let landTarget = null, landSentTarget = 0, landSentAt = 0;
+function drawLandBeam(group, from, to, now) {
+  group.visible = true;
+  const start = from.clone().add(new THREE.Vector3(0, 0.5, 0));
+  const end = to.clone().add(new THREE.Vector3(0, 0.5, 0));
+  const count = Math.max(2, Math.ceil(start.distanceTo(end) / 0.28));
+  group.children.forEach((phone, i) => {
+    phone.visible = i < count;
+    if (!phone.visible) return;
+    const t = (i + (now / 180 % 1)) / count;
+    phone.position.lerpVectors(start, end, t);
+    phone.scale.set(0.38 * phoneAspect, 0.38, 1);
+  });
+}
+function stopLandBeam() {
+  landTarget = null;
+  landBeam.visible = false;
+  if (landSentTarget) netSend({ t: "landlock", target: 0 });
+  landSentTarget = 0;
+}
+function updateLandBeam(dt, now) {
+  const active = current.kind === "land" && playing && !dead && !paused && mouseHeld &&
+    !!document.pointerLockElement && now >= holdUntil;
+  const forward = new THREE.Vector3(-Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
+  const eye = player.position.clone().add(new THREE.Vector3(0, 0.5, 0));
+  const valid = (target) => {
+    if (!target || !target.alive) return false;
+    const delta = target.mesh.position.clone().sub(player.position);
+    if (delta.length() > current.primaryRange) return false;
+    if (delta.lengthSq() > 0.001 && delta.normalize().dot(forward) < Math.cos(Math.PI / 4)) return false;
+    return landLineClear(eye, target.mesh.position.clone().add(new THREE.Vector3(0, 0.5, 0)));
+  };
+  if (!active) stopLandBeam();
+  else {
+    const targets = mode === "online" ? [...remotes.values()] : bots;
+    if (!targets.includes(landTarget) || !valid(landTarget)) {
+      landTarget = targets.filter(valid).sort((a, b) =>
+        a.mesh.position.distanceToSquared(player.position) - b.mesh.position.distanceToSquared(player.position))[0] || null;
+    }
+    if (!landTarget) stopLandBeam();
+    else {
+      drawLandBeam(landBeam, player.position, landTarget.mesh.position, now);
+      if (mode === "bots") {
+        damageBot(landTarget, current.primaryDps * dt, "", "player");
+        if (!landTarget.alive) stopLandBeam();
+      } else if (landSentTarget !== landTarget.id || now - landSentAt >= 100) {
+        landSentTarget = landTarget.id;
+        landSentAt = now;
+        netSend({ t: "landlock", target: landTarget.id });
+      }
+    }
+  }
+  for (const r of remotes.values()) {
+    const target = r.landTarget === net?.id ? { mesh: player, alive: !dead } : remotes.get(r.landTarget);
+    const show = r.char === "land" && r.alive && target?.alive && now - r.landBeamAt < 300 &&
+      r.mesh.position.distanceTo(target.mesh.position) <= 10;
+    if (show) {
+      if (!r.landBeam) r.landBeam = makeLandBeam();
+      drawLandBeam(r.landBeam, r.mesh.position, target.mesh.position, now);
+    } else if (r.landBeam) r.landBeam.visible = false;
+  }
 }
 
 // ================= MR. MAHONEY: PHONE BURST =================
@@ -3862,7 +3961,7 @@ function abilityDefs() {
   if (current.kind === "land") {
     return {
       accent: "#65c9ff",
-      tiles: [],
+      tiles: [{ key: "LMB", name: "Phone Beam", icon: ICON.phones, badge: () => "10m" }],
       ultIcon: ICON.sun,
     };
   }
@@ -4042,8 +4141,8 @@ function buildAbilityBar() {
 }
 
 function updateAbilityBar(now) {
-  // Mr. Land has no abilities: do not display any weapon or ultimate controls.
-  const show = playing && current.kind !== "land";
+  // Display Land's primary, but keep his ultimate hidden.
+  const show = playing;
   abBar.style.display = show ? "flex" : "none";
   sideKeys.style.display = playing ? "flex" : "none"; // camera and voice controls still work
   if (!show) return;
@@ -4080,6 +4179,9 @@ function updateAbilityBar(now) {
       : ready ? "drop-shadow(0 0 4px " + def.accent + "99)" : "none";
     e.inner.style.opacity = ready || active ? "1" : "0.6";
   }
+
+  abUlt.uw.style.display = current.kind === "land" ? "none" : "block";
+  if (current.kind === "land") return;
 
   // ult icon: ring fills as it charges, spins rainbow when ready
   const pct = Math.max(0, Math.min(100, Math.floor((ultCharge / current.ultCost) * 100)));
@@ -4199,6 +4301,7 @@ function animate() {
     player.position.lerp(holdPos, 0.6);
     velY = 0;
   }
+  updateLandBeam(dt, now);
   checkPads(now);
   player.rotation.y = yaw;
 
@@ -4444,7 +4547,7 @@ function animate() {
 
   // Ability text
   if (current.kind === "land") {
-    abilityHud.textContent = "";
+    abilityHud.textContent = "Hold Left Click: Phone Beam · 20 DPS · 10m";
   } else if (current.kind === "applebee") {
     abilityHud.innerHTML =
       (appleReload > 0
