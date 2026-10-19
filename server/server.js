@@ -2,7 +2,7 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const SERVER_VERSION = 12; // protocol version; differing versions do not imply a stale deployment
+const SERVER_VERSION = 14; // protocol version; differing versions do not imply a stale deployment
 const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 30;
 const RESPAWN_MS = 3000;
@@ -77,7 +77,7 @@ function num(v, lo, hi, d) {
   return Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : d;
 }
 function pub(p) {
-  return { id: p.id, name: p.name, char: p.char, y: p.y, x: p.x, z: p.z, yaw: p.yaw, hp: p.hp, max: p.max, alive: p.alive };
+  return { id: p.id, name: p.name, char: p.char, y: p.y, x: p.x, z: p.z, yaw: p.yaw, hp: p.hp, max: p.max, alive: p.alive, bonus: p.bonus || 0, ultShield: p.ultShield || 0, balding: !!p.balding, sprint: !!p.sprint };
 }
 
 function pickSpawn(room) {
@@ -140,6 +140,16 @@ function leave(p) {
   if (room.players.size === 0 && room.code !== "PUBLIC") rooms.delete(room.code);
 }
 
+function sendShieldState(p) {
+  broadcast(p.room, { t: "hp", id: p.id, hp: p.hp, max: p.max, bonus: p.bonus, ultShield: p.ultShield || 0, balding: !!p.balding, by: 0, dealt: 0 });
+}
+function endBalding(p) {
+  if (!p.balding && !p.ultShield) return;
+  p.balding = false;
+  p.ultShield = 0;
+  sendShieldState(p);
+}
+
 // ---------- combat ----------
 function respawn(p) {
   if (!p.room) return;
@@ -148,6 +158,9 @@ function respawn(p) {
   p.z = s[1];
   p.hp = p.max;
   p.bonus = 0;
+  p.ultShield = 0;
+  p.balding = false;
+  p.sprint = false;
   p.alive = true;
   p.landTarget = 0;
   p.stunnedUntil = 0;
@@ -162,7 +175,7 @@ function respawn(p) {
 function siphonPlayer(room, a) {
   a.hp = a.max;
   a.bonus = BONUS_SHIELD;
-  broadcast(room, { t: "hp", id: a.id, hp: a.hp, max: a.max, bonus: a.bonus, by: 0, dealt: 0 });
+  broadcast(room, { t: "hp", id: a.id, hp: a.hp, max: a.max, bonus: a.bonus, ultShield: a.ultShield || 0, balding: !!a.balding, by: 0, dealt: 0 });
 }
 
 function hit(a, m, channelSeconds = 0, blastAuthorized = false) {
@@ -215,7 +228,7 @@ function hit(a, m, channelSeconds = 0, blastAuthorized = false) {
       }
     }
   }
-  if (t.inv) return; // can't be hurt during the ult
+  // Balding is damageable; its temporary shield absorbs damage first.
   if (rule.dmg === 0) {
     if (rule.slow) send(t, { t: "slow", ms: rule.slow });
     return;
@@ -229,7 +242,10 @@ function hit(a, m, channelSeconds = 0, blastAuthorized = false) {
   let dmg = rule.dmg * (m.k === "landbeam" ? Math.min(0.1, channelSeconds) : 1);
   if (a.char === "applebee" && a.dmgBoostUntil && Date.now() < a.dmgBoostUntil) dmg *= 1.2; // the bees' +20% from Honey Choice
   if (t.sh) dmg *= 1 - SHIELD_BLOCK;
-  const dealt = Math.min(dmg, t.hp + t.bonus);
+  const dealt = Math.min(dmg, t.hp + t.bonus + (t.ultShield || 0));
+  const ultSoak = Math.min(t.ultShield || 0, dmg);
+  t.ultShield = (t.ultShield || 0) - ultSoak;
+  dmg -= ultSoak;
   // the blue bonus shield soaks damage first
   const soak = Math.min(t.bonus, dmg);
   t.bonus -= soak;
@@ -239,13 +255,16 @@ function hit(a, m, channelSeconds = 0, blastAuthorized = false) {
   t.lastHitAt = Date.now();
   broadcast(room, {
     t: "hp", id: t.id, hp: Math.max(0, +t.hp.toFixed(1)), max: t.max,
-    bonus: +t.bonus.toFixed(1), by: a.id, dealt,
+    bonus: +t.bonus.toFixed(1), ultShield: t.ultShield || 0, balding: !!t.balding, by: a.id, dealt,
   });
 
 
   if (t.hp <= 0) {
     t.hp = 0;
     t.bonus = 0;
+    t.ultShield = 0;
+    t.balding = false;
+    t.sprint = false;
     t.alive = false;
     t.lastHitBy = 0;
     t.deaths++;
@@ -295,6 +314,9 @@ function onMessage(p, m) {
     p.max = ch.health;
     p.hp = p.max;
     p.bonus = 0;
+  p.ultShield = 0;
+  p.balding = false;
+  p.sprint = false;
     p.lastHitBy = 0;
     p.alive = true;
     p.ready = true;
@@ -305,7 +327,17 @@ function onMessage(p, m) {
 
   if (!p.ready || !p.alive) return;
 
+  if (m.t === "balding" && m.active === false) { endBalding(p); return; }
   if (Date.now() < (p.stunnedUntil || 0)) return;
+  if (m.t === "balding") {
+    if (p.char !== "mahoney" || m.active !== true || p.balding || Date.now() < (p.nextBaldingAt || 0)) return;
+    p.balding = true;
+    p.ultShield = 250;
+    p.baldingUntil = Date.now() + 12600;
+    p.nextBaldingAt = p.baldingUntil; // cannot toggle the channel to refill shield
+    sendShieldState(p);
+    return;
+  }
   if (m.t === "landblast") { fireLandBlastServer(p, m); return; }
   if (m.t === "landlock") {
     if (p.char !== "land") return;
@@ -322,7 +354,8 @@ function onMessage(p, m) {
     p.yaw = num(m.yaw, -1000, 1000, p.yaw);
     p.pitch = num(m.pitch, -2, 2, p.pitch);
     p.sh = p.char !== "land" && m.sh ? 1 : 0;
-    p.inv = p.char !== "land" && m.inv ? 1 : 0;
+    p.inv = 0; // no teacher gains invincibility from client state
+    p.sprint = p.char === "land" && !!m.sprint;
     p.y = num(m.y, -2, 30, p.y);
   } else if (m.t === "fx") {
     if (p.char === "land" || (m.k === "lb" || m.k === "ls")) return; // channel effects are server-owned
@@ -355,7 +388,7 @@ function onMessage(p, m) {
       if (now - p.honeyAt < 900) return; // keeps the once-a-second ticks from being spammed
       p.honeyAt = now;
       p.hp = Math.min(p.max, p.hp + m.amt);
-      broadcast(p.room, { t: "hp", id: p.id, hp: +p.hp.toFixed(1), max: p.max, bonus: +p.bonus.toFixed(1), by: 0, dealt: 0 });
+      broadcast(p.room, { t: "hp", id: p.id, hp: +p.hp.toFixed(1), max: p.max, bonus: +p.bonus.toFixed(1), ultShield: p.ultShield || 0, balding: !!p.balding, by: 0, dealt: 0 });
     } else if (m.k === "boost") {
       if (now - p.lastHoney < 14000) return; // matches her 15s cooldown, minus a little slack for lag
       p.lastHoney = now;
@@ -509,13 +542,14 @@ function fireLandBlastServer(p, m) {
   broadcast(p.room, { t: "fx", id: p.id, k: "ls", a: [origin.x, origin.y, origin.z, end.x, end.y, end.z] });
   if (!target || !(hit(p, { k: "landblast", target: target.id }, 0, true) > 0)) return;
   p.bonus = Math.min(BONUS_SHIELD, p.bonus + 30);
-  broadcast(p.room, { t: "hp", id: p.id, hp: p.hp, max: p.max, bonus: p.bonus, by: 0, dealt: 0 });
+  broadcast(p.room, { t: "hp", id: p.id, hp: p.hp, max: p.max, bonus: p.bonus, ultShield: p.ultShield || 0, balding: !!p.balding, by: 0, dealt: 0 });
   if (target.alive) {
     const pos = landKnockback(p, target);
     target.x = pos.x; target.z = pos.z;
     target.stunnedUntil = now + 1000;
     target.landTarget = 0;
     target.sh = 0;
+    target.sprint = false;
     send(target, { t: "landstun", x: pos.x, y: pos.y, z: pos.z, ms: 1000 });
   }
 }
@@ -542,14 +576,17 @@ function updateLandChannel(p, now) {
 // send everyone's position 20 times a second
 setInterval(() => {
   for (const room of rooms.values()) {
-    for (const p of room.players.values()) updateLandChannel(p, Date.now());
+    for (const p of room.players.values()) {
+      if (p.balding && Date.now() >= p.baldingUntil) endBalding(p);
+      updateLandChannel(p, Date.now());
+    }
     if (room.players.size < 2) continue;
     const list = [];
     for (const p of room.players.values()) {
       if (p.ready && p.alive) {
         list.push({
           id: p.id, x: +p.x.toFixed(2), z: +p.z.toFixed(2),
-          y: +p.y.toFixed(2), yaw: +p.yaw.toFixed(3), pitch: +p.pitch.toFixed(3), sh: p.sh, inv: p.inv,
+          y: +p.y.toFixed(2), yaw: +p.yaw.toFixed(3), pitch: +p.pitch.toFixed(3), hp: p.hp, bonus: p.bonus || 0, ultShield: p.ultShield || 0, sh: p.sh, inv: 0, balding: !!p.balding, sprint: !!p.sprint,
         });
       }
     }
