@@ -2,7 +2,7 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const SERVER_VERSION = 11; // protocol version; differing versions do not imply a stale deployment
+const SERVER_VERSION = 12; // protocol version; differing versions do not imply a stale deployment
 const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 30;
 const RESPAWN_MS = 3000;
@@ -10,12 +10,13 @@ const CHARS = { mahoney: { health: 275 }, applebee: { health: 200 }, land: { hea
 
 // The SERVER decides damage, so players can't edit their own numbers
 const RULES = {
-  landbeam: { dmg: 20, range: 10 }, // damage per second; server-timed channel only
+  landbeam: { dmg: 38, range: 20 }, // damage per second; server-timed channel only
+  landblast: { dmg: 52, range: 20 },
   phone: { dmg: 10, range: 95 },
   grenade: { dmg: 75, range: 70 },
   beam: { dmg: 150, range: 110 },
   hammer: { dmg: 99999, range: 10 }, // the only one-shot move
-  apple: { dmg: 50, range: 125 }, // Ms. Applebee hitscan apple
+  apple: { dmg: 55, range: 125 }, // Ms. Applebee hitscan apple
   mine: { dmg: 75, range: 90 }, // Ms. Applebee landmine
   hive: { dmg: 50, range: 10, slow: 2000 }, // Ms. Applebee beehive (slows for 2s)
   bee: { dmg: 50, range: 125 }, // Ms. Applebee bee gun blast
@@ -149,6 +150,7 @@ function respawn(p) {
   p.bonus = 0;
   p.alive = true;
   p.landTarget = 0;
+  p.stunnedUntil = 0;
   p.sh = 0;
   p.inv = 0;
   p.y = 1;
@@ -163,7 +165,8 @@ function siphonPlayer(room, a) {
   broadcast(room, { t: "hp", id: a.id, hp: a.hp, max: a.max, bonus: a.bonus, by: 0, dealt: 0 });
 }
 
-function hit(a, m, channelSeconds = 0) {
+function hit(a, m, channelSeconds = 0, blastAuthorized = false) {
+  if (Date.now() < (a.stunnedUntil || 0)) return;
   const room = a.room;
   const rule = RULES[m.k];
   const t = room.players.get(m.target);
@@ -171,7 +174,8 @@ function hit(a, m, channelSeconds = 0) {
   if (!a.ready || !a.alive || !t.ready || !t.alive) return;
   // Land can only damage through the server-timed primary channel.
   if (m.k === "landbeam" && (a.char !== "land" || channelSeconds <= 0)) return;
-  if (a.char === "land" && m.k !== "landbeam") return;
+  if (m.k === "landblast" && (a.char !== "land" || !blastAuthorized)) return;
+  if (a.char === "land" && m.k !== "landbeam" && m.k !== "landblast") return;
   if (Math.hypot(a.x - t.x, a.z - t.z) > rule.range) return;
   if (m.k === "hammer") {
     const now = Date.now();
@@ -252,6 +256,7 @@ function hit(a, m, channelSeconds = 0) {
     siphonPlayer(room, a);
     t.respawnTimer = setTimeout(() => respawn(t), RESPAWN_MS);
   }
+  return dealt;
 }
 
 // A player picked a teacher from the Esc menu. It counts as a respawn,
@@ -300,6 +305,8 @@ function onMessage(p, m) {
 
   if (!p.ready || !p.alive) return;
 
+  if (Date.now() < (p.stunnedUntil || 0)) return;
+  if (m.t === "landblast") { fireLandBlastServer(p, m); return; }
   if (m.t === "landlock") {
     if (p.char !== "land") return;
     const target = Number.isInteger(m.target) ? m.target : 0;
@@ -318,7 +325,7 @@ function onMessage(p, m) {
     p.inv = p.char !== "land" && m.inv ? 1 : 0;
     p.y = num(m.y, -2, 30, p.y);
   } else if (m.t === "fx") {
-    if (p.char === "land" || m.k === "lb") return; // channel effects are server-owned
+    if (p.char === "land" || (m.k === "lb" || m.k === "ls")) return; // channel effects are server-owned
     // visual effects (phones, grenades, beams) just get passed on to everyone else
     const a = Array.isArray(m.a) ? m.a.slice(0, 8) : [];
     if (!a.every((v) => typeof v === "number" && Number.isFinite(v))) return;
@@ -450,14 +457,77 @@ function landLineClear(a, b) {
   return true;
 }
 
+function landShotTarget(origin, dir, targets, range) {
+  let best = null, bestDistance = range;
+  for (const target of targets) {
+    if (!target.alive) continue;
+    const dx = target.x - origin.x, dy = target.y + 0.5 - origin.y, dz = target.z - origin.z;
+    if (Math.hypot(dx, dy, dz) > range) continue;
+    const along = dx * dir.x + dy * dir.y + dz * dir.z;
+    if (along < 0 || along > bestDistance) continue;
+    const off = dx * dx + dy * dy + dz * dz - along * along;
+    if (off > 0.85 * 0.85) continue;
+    if (!landLineClear(origin, { x: target.x, y: target.y + 0.5, z: target.z })) continue;
+    best = target;
+    bestDistance = along;
+  }
+  return best;
+}
+function landKnockback(from, target) {
+  const dx = target.x - from.x, dz = target.z - from.z;
+  const length = Math.hypot(dx, dz);
+  const ux = length > 0.001 ? dx / length : -Math.sin(from.yaw || 0);
+  const uz = length > 0.001 ? dz / length : -Math.cos(from.yaw || 0);
+  const out = { x: target.x, y: target.y, z: target.z };
+  for (let step = 1; step <= 30; step++) {
+    const x = target.x + ux * step * 0.1, z = target.z + uz * step * 0.1;
+    if (Math.abs(x) > 48 || Math.abs(z) > 48) break;
+    if (wallBoxes.some(b => target.y - 1 < b.h && target.y + 1 > b.y0 &&
+      x > b.minX - 0.6 && x < b.maxX + 0.6 && z > b.minZ - 0.6 && z < b.maxZ + 0.6)) break;
+    out.x = x; out.z = z;
+  }
+  return out;
+}
+
+function fireLandBlastServer(p, m) {
+  const now = Date.now();
+  if (p.char !== "land" || now < (p.stunnedUntil || 0) || now - (p.lastLandBlast ?? -Infinity) < 7000) return;
+  if (![m.dx, m.dy, m.dz].every(v => typeof v === "number" && Number.isFinite(v))) return;
+  const length = Math.hypot(m.dx, m.dy, m.dz);
+  if (length < 0.9 || length > 1.1) return;
+  const dir = { x: m.dx / length, y: m.dy / length, z: m.dz / length };
+  p.lastLandBlast = now; // misses also consume the cooldown
+  const origin = { x: p.x, y: p.y + 0.5, z: p.z };
+  const targets = [...p.room.players.values()].filter(t => t !== p && t.ready);
+  const target = landShotTarget(origin, dir, targets, 20);
+  let end = { x: origin.x + dir.x * 20, y: origin.y + dir.y * 20, z: origin.z + dir.z * 20 };
+  if (target) end = { x: target.x, y: target.y + 0.5, z: target.z };
+  else for (let d = 0.1; d <= 20; d += 0.1) {
+    const point = { x: origin.x + dir.x * d, y: origin.y + dir.y * d, z: origin.z + dir.z * d };
+    if (!landLineClear(origin, point)) { end = point; break; }
+  }
+  broadcast(p.room, { t: "fx", id: p.id, k: "ls", a: [origin.x, origin.y, origin.z, end.x, end.y, end.z] });
+  if (!target || !(hit(p, { k: "landblast", target: target.id }, 0, true) > 0)) return;
+  p.bonus = Math.min(BONUS_SHIELD, p.bonus + 30);
+  broadcast(p.room, { t: "hp", id: p.id, hp: p.hp, max: p.max, bonus: p.bonus, by: 0, dealt: 0 });
+  if (target.alive) {
+    const pos = landKnockback(p, target);
+    target.x = pos.x; target.z = pos.z;
+    target.stunnedUntil = now + 1000;
+    target.landTarget = 0;
+    target.sh = 0;
+    send(target, { t: "landstun", x: pos.x, y: pos.y, z: pos.z, ms: 1000 });
+  }
+}
+
 function updateLandChannel(p, now) {
   if (!p.landTarget) return;
   const t = p.room.players.get(p.landTarget);
   const dx = t ? t.x - p.x : 0, dy = t ? t.y - p.y : 0, dz = t ? t.z - p.z : 0;
   const distance = Math.hypot(dx, dy, dz);
   const facing = distance < 0.001 ? 1 : (-Math.sin(p.yaw) * Math.cos(p.pitch) * dx + Math.sin(p.pitch) * dy - Math.cos(p.yaw) * Math.cos(p.pitch) * dz) / distance;
-  if (p.char !== "land" || !p.alive || !p.ready || !t || t === p || !t.alive || !t.ready ||
-      now - p.landLockAt > 250 || distance > 10 || facing < Math.cos(Math.PI / 4) ||
+  if (now < (p.stunnedUntil || 0) || p.char !== "land" || !p.alive || !p.ready || !t || t === p || !t.alive || !t.ready ||
+      now - p.landLockAt > 250 || distance > 20 || facing < Math.cos(Math.PI / 4) ||
       !landLineClear({ x: p.x, y: p.y + 0.5, z: p.z }, { x: t.x, y: t.y + 0.5, z: t.z })) {
     p.landTarget = 0;
     broadcast(p.room, { t: "fx", id: p.id, k: "lb", a: [0] }, p.id);
