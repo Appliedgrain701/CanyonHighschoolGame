@@ -380,7 +380,7 @@ const characters = {
     ultBeams: 3,
   },
   land: {
-    name: "Mr. Land / Cleetus",
+    name: "Mr. Land",
     kind: "land",
     color: 0x4d8bba,
     picture: "mrland.png",
@@ -1471,6 +1471,8 @@ function makeCard(locked) {
 }
 
 for (const key in characters) {
+  // Cleetus is Mr. Land's X transformation, not a separate selectable teacher.
+  if (key === "cleetus") continue;
   const c = characters[key];
   const hex = "#" + c.color.toString(16).padStart(6, "0");
   const card = makeCard(false);
@@ -1558,8 +1560,7 @@ function selectCharacter(key) {
   lastShot = lastDash = lastGrenade = lastMelee = -99999;
   lastLandPhone = landDamageTick = -99999;
   mouseHeld = false;
-  landBeam.visible = false;
-  landLockHud.style.display = "none";
+  stopLandBeam();
   resetApples();
   bonusShield = 0;
   dashFrames = 0;
@@ -1751,7 +1752,7 @@ addEventListener("mousemove", (e) => {
   }
 });
 
-// Left click = shoot (or fire a beam during the ult), right click (hold) = shield
+// Left click = primary attack (Mr. Land auto-locks and streams phones only at targets).
 addEventListener("mousedown", (e) => {
   if (!playing || dead || paused || !document.pointerLockElement) return;
   if (current.kind === "applebee" && honeyChoiceUntil > performance.now()) {
@@ -1788,8 +1789,7 @@ addEventListener("mouseup", (e) => {
   if (e.button === 2) rightHeld = false;
   if (e.button === 0) {
     mouseHeld = false;
-    landBeam.visible = false;
-    landLockHud.style.display = "none";
+    stopLandBeam();
   }
 });
 addEventListener("contextmenu", (e) => e.preventDefault());
@@ -1798,8 +1798,7 @@ document.addEventListener("pointerlockchange", () => {
   if (!document.pointerLockElement) {
     rightHeld = false;
     mouseHeld = false;
-    landBeam.visible = false;
-    landLockHud.style.display = "none";
+    stopLandBeam();
     // the mouse got released (Esc was pressed): open the pause menu.
     // Skip this for a moment right after picking a teacher, since some browsers
     // fire this same event when the lock request itself just failed or is still
@@ -2682,6 +2681,8 @@ function handleFx(m) {
   } else if (m.k === "z") {
     addZone(a[0], a[1], a[2], a[3], a[4], false);
     boomAt(new THREE.Vector3(a[0], a[1] + 0.5, a[2]), a[3], 0xffd23f);
+  } else if (m.k === "lt" && a.length >= 6) {
+    showRemoteLandStream(m.id, new THREE.Vector3(a[3], a[4], a[5]));
   } else if (m.k === "lb" && a.length >= 6) {
     // Another Mr. Land's big phone. Effects are visual; their server applies damage.
     spawnLandBigPhone(new THREE.Vector3(a[0], a[1], a[2]),
@@ -2760,39 +2761,56 @@ function switchLandForm() {
   }
 }
 
-function nearestLandTarget(maxRange = 10) {
-  let bestTarget = null;
-  let bestDistance = maxRange;
-  const consider = (entity, type, position, alive) => {
-    if (!alive) return;
-    const d = Math.hypot(position.x - player.position.x, position.z - player.position.z);
-    if (d < bestDistance && hasLineOfSight(player.position, position)) {
-      bestDistance = d;
-      bestTarget = { entity, type, distance: d };
+// Scarlet Witch-style soft lock: enemies must be within 10 world units,
+// unobstructed, AND close to the center of the player's aim. The target stays
+// locked while it remains in that aim field instead of flickering every frame.
+const LAND_RANGE = 10;
+const LAND_LOCK_RADIUS = 2.6; // world units around the crosshair's aim ray
+const LAND_TICK_MS = 100;
+const LAND_TICK_DAMAGE = 2; // 2 damage / 0.1 seconds = 20 damage per second
+let landDamageTick = -99999;
+let landLockedEntity = null;
+let landFxAt = -99999;
+
+function nearestLandTarget(maxRange = LAND_RANGE, aimAssist = false) {
+  let best = null;
+  let bestScore = Infinity;
+  const eye = camera.getWorldPosition(new THREE.Vector3());
+  const look = camera.getWorldDirection(new THREE.Vector3()).normalize();
+  const consider = (entity, type) => {
+    if (!entity.alive || !entity.mesh || !entity.mesh.position) return;
+    const pos = entity.mesh.position;
+    const fromPlayer = new THREE.Vector3().subVectors(pos, player.position);
+    const range = fromPlayer.length();
+    if (range > maxRange || range < 0.01) return;
+    if (!hasLineOfSight(player.position, pos)) return;
+    let perpendicular = 0;
+    if (aimAssist) {
+      const towards = new THREE.Vector3().subVectors(pos, eye);
+      const distanceAlongAim = towards.dot(look);
+      if (distanceAlongAim <= 0) return; // never lock behind the camera
+      perpendicular = Math.sqrt(Math.max(0, towards.lengthSq() - distanceAlongAim * distanceAlongAim));
+      if (perpendicular > LAND_LOCK_RADIUS) return; // must aim roughly at an enemy
+    }
+    // Prefer the player nearest the crosshair; keep an existing valid lock.
+    const score = aimAssist
+      ? perpendicular + range * 0.035 - (entity === landLockedEntity ? 0.85 : 0)
+      : range;
+    if (score < bestScore) {
+      bestScore = score;
+      best = { entity, type, distance: range };
     }
   };
-  for (const bot of bots) consider(bot, "bot", bot.mesh.position, bot.alive);
-  for (const remote of remotes.values()) consider(remote, "remote", remote.mesh.position, remote.alive);
-  return bestTarget;
+  if (mode === "bots") for (const bot of bots) consider(bot, "bot");
+  if (mode === "online") for (const remote of remotes.values()) consider(remote, "remote");
+  return best;
 }
 
-// Mr. Land's primary attack is a continuously tracking, short-range stream of
-// phones. No target = no beam, no spawned normal bullets, and no damage.
-const LAND_RANGE = 10;
-const LAND_TICK_MS = 100;
-const LAND_TICK_DAMAGE = 2; // 2 every 100ms = 20 damage per second
-let landDamageTick = -99999;
+// A continuous STREAM OF PHONES rather than a normal projectile gun or a
+// glowing laser line. The moving phones bend and follow a living target.
 const landBeam = new THREE.Group();
 const landBeamPhones = [];
-const landBeamPoints = new Float32Array(6);
-const landBeamGeometry = new THREE.BufferGeometry();
-landBeamGeometry.setAttribute("position", new THREE.BufferAttribute(landBeamPoints, 3));
-const landBeamLine = new THREE.Line(landBeamGeometry, new THREE.LineBasicMaterial({
-  color: 0x84f5ff, transparent: true, opacity: 0.82, depthTest: false,
-}));
-landBeamLine.renderOrder = 15;
-landBeam.add(landBeamLine);
-for (let i = 0; i < 12; i++) {
+for (let i = 0; i < 18; i++) {
   const phone = new THREE.Mesh(phoneGeo, phoneMat);
   phone.renderOrder = 16;
   landBeam.add(phone);
@@ -2806,41 +2824,87 @@ landLockHud.style.cssText = "position:fixed;left:50%;top:57%;transform:translate
   "pointer-events:none;z-index:5;display:none;white-space:nowrap";
 document.body.appendChild(landLockHud);
 
+function positionLandPhoneStream(phones, origin, end, now) {
+  const delta = new THREE.Vector3().subVectors(end, origin);
+  const horizontal = new THREE.Vector3(-delta.z, 0, delta.x).normalize();
+  for (let i = 0; i < phones.length; i++) {
+    const phone = phones[i];
+    // Every phone slides down the curved connection toward the tracked target.
+    const t = 0.04 + 0.94 * (((i / phones.length) + now / 520) % 1);
+    const bend = Math.sin(Math.PI * t) * Math.sin(now / 145 + i * 0.7) * 0.14;
+    phone.position.copy(origin).addScaledVector(delta, t).addScaledVector(horizontal, bend);
+    phone.quaternion.copy(camera.quaternion);
+    phone.rotateZ(now * 0.008 + i * 0.65);
+    const size = 0.37 + Math.sin(now / 95 + i) * 0.045;
+    phone.scale.set(size * phoneAspect, size, 1);
+  }
+}
+
+// Network-only visuals of OTHER players' phone beams; they don't apply damage.
+const remoteLandStreams = new Map();
+function showRemoteLandStream(id, destination) {
+  let effect = remoteLandStreams.get(id);
+  if (!effect) {
+    const group = new THREE.Group();
+    const phones = [];
+    for (let i = 0; i < 14; i++) {
+      const phone = new THREE.Mesh(phoneGeo, phoneMat);
+      group.add(phone);
+      phones.push(phone);
+    }
+    scene.add(group);
+    effect = { group, phones, end: destination.clone(), last: 0 };
+    remoteLandStreams.set(id, effect);
+  }
+  effect.end.copy(destination);
+  effect.last = performance.now();
+}
+function updateRemoteLandStreams(now) {
+  for (const [id, effect] of remoteLandStreams) {
+    const r = remotes.get(id);
+    if (!r || !r.alive || now - effect.last > 250) {
+      scene.remove(effect.group);
+      remoteLandStreams.delete(id);
+      continue;
+    }
+    positionLandPhoneStream(effect.phones,
+      new THREE.Vector3(r.mesh.position.x, r.mesh.position.y + 0.5, r.mesh.position.z),
+      effect.end, now);
+  }
+}
+function stopLandBeam() {
+  landLockedEntity = null;
+  landBeam.visible = false;
+  landLockHud.style.display = "none";
+}
+
 function landAutoAimAttack() {
   if (!playing || dead || paused || current.kind !== "land" || !mouseHeld ||
       !document.pointerLockElement || ultPhase !== 0) {
-    landBeam.visible = false;
-    landLockHud.style.display = "none";
+    stopLandBeam();
     return;
   }
-  const target = nearestLandTarget(LAND_RANGE);
-  landLockHud.style.display = "block";
+
+  // Holding left click does not produce any phones without a valid target.
+  const target = nearestLandTarget(LAND_RANGE, true);
   if (!target) {
-    landBeam.visible = false;
-    landLockHud.textContent = "NO TARGET IN 10m";
-    return; // No random phone shots when no one is in range.
+    stopLandBeam();
+    return;
   }
 
+  landLockedEntity = target.entity;
   const now = performance.now();
+  const origin = new THREE.Vector3(player.position.x, player.position.y + 0.55, player.position.z);
+  const end = target.entity.mesh.position.clone().add(new THREE.Vector3(0, 0.2, 0));
   landBeam.visible = true;
-  landLockHud.textContent = "LOCKED: " + target.entity.name;
-  const origin = new THREE.Vector3(player.position.x, player.position.y + 0.5, player.position.z);
-  const end = target.entity.mesh.position.clone().add(new THREE.Vector3(0, 0.15, 0));
-  const linePositions = landBeamGeometry.attributes.position;
-  linePositions.setXYZ(0, origin.x, origin.y, origin.z);
-  linePositions.setXYZ(1, end.x, end.y, end.z);
-  linePositions.needsUpdate = true;
-  landBeamGeometry.computeBoundingSphere();
-  const direction = new THREE.Vector3().subVectors(end, origin);
-  for (let i = 0; i < landBeamPhones.length; i++) {
-    // Wrap along the line so the stream moves *towards* the target.
-    const t = 0.07 + 0.88 * (((i / landBeamPhones.length) + now / 650) % 1);
-    const phone = landBeamPhones[i];
-    phone.position.copy(origin).addScaledVector(direction, t);
-    phone.quaternion.copy(camera.quaternion); // visible from first and third person
-    phone.rotateZ(now * 0.012 + i * 0.75);
-    const size = 0.30 + 0.06 * Math.sin(now / 110 + i);
-    phone.scale.set(size * phoneAspect, size, 1);
+  landLockHud.style.display = "block";
+  landLockHud.textContent = "TRACKING: " + target.entity.name;
+  positionLandPhoneStream(landBeamPhones, origin, end, now);
+
+  // Show other online players the same stream, without broadcasting when idle.
+  if (mode === "online" && now - landFxAt >= 100) {
+    landFxAt = now;
+    netFx("lt", [origin.x, origin.y, origin.z, end.x, end.y, end.z]);
   }
   if (now - landDamageTick < LAND_TICK_MS) return;
   landDamageTick = now;
@@ -4498,7 +4562,7 @@ function animate() {
   // Other online players
   updateRemotes(dt, now);
   updateApples(now);
-  landAutoAimAttack();
+  updateRemoteLandStreams(now);
   updateLandBigPhones(now);
   updateZones(now);
   updateBeast(dt, now);
@@ -4821,6 +4885,7 @@ function animate() {
     camera.updateProjectionMatrix();
   }
 
+  landAutoAimAttack(); // Camera is current: track the same direction the crosshair sees.
   renderer.render(scene, camera);
 }
 animate();
