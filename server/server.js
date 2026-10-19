@@ -24,7 +24,6 @@ const RULES = {
   beezone: { dmg: 15, range: 125, slow: 1500 }, // the sticky zone's one tick of damage + slow
   beeslow: { dmg: 0, range: 125, slow: 600 }, // standing in the zone keeps you slowed
   landphone: { dmg: 2, range: 10 }, // Mr. Land/Cleetus beam: 2 damage every 100ms = 20 damage per second
-  landbig: { dmg: 40, range: 10, knockback: 3, stun: 1000 }, // big phone: 40 damage, knockback, and stun
 };
 const SHIELD_BLOCK = 0.85;
 const BONUS_SHIELD = 50; // blue bonus shield a player gets from siphon (keep the same as game.js)
@@ -169,17 +168,14 @@ function hit(a, m) {
   const t = room.players.get(m.target);
   if (!rule || !t || t === a) return;
   if (!a.ready || !a.alive || !t.ready || !t.alive) return;
+  if ((a.char === "land" || a.char === "cleetus") && m.k !== "landphone") return;
+  if (m.k === "landphone" && a.char !== "land" && a.char !== "cleetus") return;
   if (Math.hypot(a.x - t.x, a.z - t.z) > rule.range) return;
   const nowHit = Date.now();
   if (m.k === "landphone") {
     if (a.char !== "land" && a.char !== "cleetus") return;
     if (nowHit - (a.landPhoneAt || 0) < 95) return;
     a.landPhoneAt = nowHit;
-  }
-  if (m.k === "landbig") {
-    if (a.char !== "land" && a.char !== "cleetus") return;
-    if (nowHit - (a.landBigAt || 0) < 7000) return;
-    a.landBigAt = nowHit;
   }
   if (m.k === "hammer") {
     const now = Date.now();
@@ -246,15 +242,6 @@ function hit(a, m) {
     bonus: +t.bonus.toFixed(1), by: a.id, dealt,
   });
 
-  if (m.k === "landbig" && t.hp > 0) {
-    const dx = t.x - a.x, dz = t.z - a.z;
-    const len = Math.hypot(dx, dz) || 1;
-    t.x = num(t.x + dx / len * rule.knockback, -48, 48, t.x);
-    t.z = num(t.z + dz / len * rule.knockback, -48, 48, t.z);
-    t.landStunnedUntil = Date.now() + rule.stun;
-    send(t, { t: "landhit", id: t.id, x: t.x, z: t.z, ms: rule.stun });
-    broadcast(room, { t: "landhit", id: t.id, x: t.x, z: t.z, ms: rule.stun }, t.id);
-  }
 
   if (t.hp <= 0) {
     t.hp = 0;
@@ -318,10 +305,8 @@ function onMessage(p, m) {
   if (!p.ready || !p.alive) return;
 
   if (m.t === "st") {
-    if (Date.now() >= (p.landStunnedUntil || 0)) {
-      p.x = num(m.x, -50, 50, p.x);
-      p.z = num(m.z, -50, 50, p.z);
-    }
+    p.x = num(m.x, -50, 50, p.x);
+    p.z = num(m.z, -50, 50, p.z);
     p.yaw = num(m.yaw, -1000, 1000, p.yaw);
     p.pitch = num(m.pitch, -2, 2, p.pitch);
     p.sh = m.sh ? 1 : 0;
@@ -344,12 +329,6 @@ function onMessage(p, m) {
     }
   } else if (m.t === "hit") {
     hit(p, m);
-  } else if (m.t === "form") {
-    // X only changes the Land/Cleetus skin; no respawn or health reset.
-    if ((p.char !== "land" && p.char !== "cleetus") ||
-        (m.char !== "land" && m.char !== "cleetus")) return;
-    p.char = m.char;
-    broadcast(room, { t: "form", id: p.id, char: p.char }, p.id);
   } else if (m.t === "switch") {
     switchTeacher(p, m);
   } else if (m.t === "honey") {
@@ -376,7 +355,7 @@ wss.on("connection", (ws) => {
     x: 0, z: 0, y: 1, char: "mahoney", yaw: 0, pitch: 0, sh: 0, inv: 0, bonus: 0, hp: 275, max: 275,
     lastHitBy: 0, lastHitAt: 0,
     kills: 0, deaths: 0, hammerAt: 0, hammerHit: new Set(), respawnTimer: null,
-    honeyAt: 0, lastHoney: 0, dmgBoostUntil: 0, landPhoneAt: 0, landBigAt: 0, landStunnedUntil: 0, // ability cooldowns and stun state
+    honeyAt: 0, lastHoney: 0, dmgBoostUntil: 0, landPhoneAt: 0, // primary beam throttle
   };
   ws.isAlive = true;
   ws.on("pong", () => (ws.isAlive = true));
