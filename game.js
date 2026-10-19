@@ -416,35 +416,6 @@ const characters = {
       "Health: 200<br>Weapon: 5 Apples (50 dmg each, hitscan)<br>No kill with all 5 = 2s reload<br>" +
       "A kill = instant refill<br>Right Click: Bee Gun (50 dmg blast + sticky zone)<br>E: Apple Landmine (75 dmg, 6s)<br>V: Beehive (50 dmg + slow)<br>X: ULT - Bee Beast (65 + 10/s + 65), press X again to recall",
   },
-  land: {
-    name: "Mr. Land",
-    kind: "land",
-    color: 0x3f72af, // no picture yet, so he's a plain office-blue box + bald head
-    health: 275,
-    speed: 0.15,
-    // Left click (hold): auto-aim chaos beam, like Scarlet Witch - ticks damage while held, no aiming needed
-    fireDelay: 100, // ms between ticks (10 ticks/sec)
-    chaosTick: 2, // dmg per tick -> 2 x 10/sec = 20 dmg/s
-    chaosRange: 30,
-    chaosCone: 0.72, // how forgiving the auto-aim lock-on is (1 = dead center only, lower = wider)
-    // Right click: "big phone" - like Magneto's RMB in Rivals but no charge-up. 1 shot every 7s.
-    phoneCooldown: 7000,
-    phoneDamage: 40,
-    phoneRange: 90,
-    phoneKnockback: 3, // meters pushed back
-    phoneHoldMs: 1000, // how long they're held in place after
-    // Shift (sprint / form-shift to Cleetus) and his ult are not built yet - more coming later
-    ultCost: 100,
-    ultStartCharge: 0,
-    ultPassivePerSec: 0,
-    ultPerDamage: 0,
-    ultPerKill: 0,
-    ultBeams: 0,
-    desc:
-      "Health: 275<br>Left Click (hold): Chaos Beam, auto-aim, 20 dmg/s<br>" +
-      "Right Click: Big Phone - 40 dmg, knocks back ~3m and holds for 1s (7s cooldown)<br>" +
-      "Shift and his ultimate are coming in a future update",
-  },
 };
 let current = characters.mahoney;
 
@@ -493,7 +464,6 @@ let lastShot = -99999;
 let lastDash = -99999;
 let lastGrenade = -99999;
 let lastMelee = -99999;
-let lastPhone2 = -99999; // Mr. Land's RMB "Big Phone" cooldown tracker
 let yaw = 0;
 let pitch = 0;
 let mouseHeld = false;
@@ -1516,7 +1486,7 @@ function selectCharacter(key) {
   maxHealth = current.health;
   playerHealth = maxHealth;
   speed = current.speed;
-  lastShot = lastDash = lastGrenade = lastMelee = lastPhone2 = -99999;
+  lastShot = lastDash = lastGrenade = lastMelee = -99999;
   resetApples();
   bonusShield = 0;
   dashFrames = 0;
@@ -1712,10 +1682,6 @@ addEventListener("mousedown", (e) => {
   if (e.button === 2) {
     if (current.kind === "applebee") {
       fireBeeGun();
-      return;
-    }
-    if (current.kind === "land") {
-      fireLandPhone();
       return;
     }
     rightHeld = true;
@@ -2682,11 +2648,6 @@ function tryShoot() {
     fireApple();
     return;
   }
-  if (current.kind === "land") {
-    lastShot = now;
-    fireChaosTick();
-    return;
-  }
   lastShot = now;
   shoot();
 }
@@ -2839,7 +2800,6 @@ function startUlt() {
     if (ultCharge >= current.ultCost) castBeast();
     return;
   }
-  if (current.kind === "land") return; // no ultimate for him yet - coming in a future update
   if (ultPhase !== 0 || ultCharge < current.ultCost) return;
   ultPhase = 1; // bald head close-up
   ultStart = performance.now();
