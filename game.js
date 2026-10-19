@@ -384,7 +384,27 @@ const characters = {
     kind: "land",
     color: 0x4d8bba,
     picture: "mrland.png",
-    health: 250,
+    health: 225,
+    speed: 0.15,
+    fireDelay: 100,
+    damage: 20,
+    burst: 1,
+    spread: 0,
+    landPhoneCooldown: 7000,
+    ultCost: 100,
+    ultStartCharge: 0,
+    ultPassivePerSec: 0.7,
+    ultPerDamage: 0.07,
+    ultPerKill: 8,
+    ultBeams: 3,
+  },
+  // Same character kit, alternate appearance used by Mr. Land's X ability.
+  cleetus: {
+    name: "Cleetus",
+    kind: "land",
+    color: 0x4d8bba,
+    picture: "cleetus.png",
+    health: 225,
     speed: 0.15,
     fireDelay: 100,
     damage: 20,
@@ -448,7 +468,7 @@ const BEAM_HIT_RADIUS = 1.4;
 const BEAM_LIFE = 45; // frames a beam stays visible
 const PHONE_VIEW = { x: 0.38, y: -0.36, z: -0.8 }; // where the phone sits in first person
 const NET_RATE = 50; // ms between position updates sent online (20 per second)
-const SERVER_VERSION = 8; // must match server.js (used to warn you if the server is old)
+const SERVER_VERSION = 9; // must match server.js (used to warn you if the server is old)
 const LAST_HIT_WINDOW = 10000; // ms: switching teachers gives the kill to whoever hit you in this time
 
 // ----- BOT SETTINGS (change these to make bots easier or harder) -----
@@ -483,6 +503,7 @@ let lastShot = -99999;
 let lastLandPhone = -99999;
 let landForm = "land";
 let landSprintUntil = 0;
+let landStunnedUntil = 0;
 let lastDash = -99999;
 let lastGrenade = -99999;
 let lastMelee = -99999;
@@ -555,6 +576,25 @@ const BODY_HEIGHT = 2.2; // height of the cutout picture
 const bodySprite = new THREE.Sprite(new THREE.SpriteMaterial({ alphaTest: 0.05 }));
 bodySprite.visible = false;
 player.add(bodySprite);
+
+// Simple rolling standing-desk prop shown while Shift sprint is held.
+const landDesk = new THREE.Group();
+const deskTop = new THREE.Mesh(new THREE.BoxGeometry(1.45, 0.1, 0.72), new THREE.MeshStandardMaterial({ color: 0x343b43, roughness: 0.7 }));
+deskTop.position.set(0, -0.28, -0.88);
+landDesk.add(deskTop);
+const deskStem = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.62, 0.12), new THREE.MeshStandardMaterial({ color: 0x8c949b, metalness: 0.45, roughness: 0.4 }));
+deskStem.position.set(0, -0.62, -0.88);
+landDesk.add(deskStem);
+const deskBase = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.08, 0.38), new THREE.MeshStandardMaterial({ color: 0x59616a, metalness: 0.35 }));
+deskBase.position.set(0, -0.94, -0.88);
+landDesk.add(deskBase);
+for (const wx of [-0.34, 0.34]) for (const wz of [-0.12, 0.12]) {
+  const wheel = new THREE.Mesh(new THREE.SphereGeometry(0.075, 8, 8), new THREE.MeshStandardMaterial({ color: 0x15171a, roughness: 0.9 }));
+  wheel.position.set(wx, -1.02, -0.88 + wz);
+  landDesk.add(wheel);
+}
+landDesk.visible = false;
+player.add(landDesk);
 
 // Swaps the purple box for a cutout picture, if the picture exists
 function loadBodyPicture(file) {
@@ -1626,11 +1666,9 @@ function damagePlayer(amount, attacker) {
 const keys = {};
 addEventListener("keydown", (e) => {
   keys[e.code] = true;
-  if (e.code === "ShiftRight" && current.kind === "land") landSprintUntil = performance.now() + 150;
-  if (e.code === "ShiftLeft" && !e.repeat && current.kind === "land" && playing && !paused) {
-    landForm = landForm === "land" ? "cleetus" : "land";
-    hpName.textContent = myName.toUpperCase() + "  ·  " + (landForm === "land" ? "MR. LAND" : "CLEETUS");
-    addFeedText("Switched to " + (landForm === "land" ? "Mr. Land" : "Cleetus") + " — UNDER DEVELOPMENT");
+  // Hold either Shift key to ride the rolling standing desk for a speed boost.
+  if ((e.code === "ShiftLeft" || e.code === "ShiftRight") && current.kind === "land") {
+    landSprintUntil = performance.now() + 150;
   }
 
   // Esc closes the pause menu (ignored for a moment so the Esc that opened it doesn't close it)
@@ -1671,7 +1709,10 @@ addEventListener("keydown", (e) => {
   }
   if (e.code === "KeyE") throwGrenade();
   if (e.code === "KeyV") melee();
-  if (e.code === "KeyX") startUlt();
+  if (e.code === "KeyX") {
+    if (current.kind === "land") switchLandForm();
+    else startUlt();
+  }
 });
 addEventListener("keyup", (e) => {
   keys[e.code] = false;
@@ -2513,6 +2554,19 @@ function handleNet(m) {
       updateStats();
       break;
     }
+    case "landhit": {
+      if (m.id === net.id) {
+        if (Number.isFinite(m.x) && Number.isFinite(m.z)) player.position.set(m.x, 1, m.z);
+        landStunnedUntil = performance.now() + Math.max(0, Math.min(1500, Number(m.ms) || 1000));
+        addFeedText("Big Phone stun!");
+      } else {
+        const r = remotes.get(m.id);
+        if (r && Number.isFinite(m.x) && Number.isFinite(m.z)) {
+          r.tx = m.x; r.tz = m.z; r.mesh.position.x = m.x; r.mesh.position.z = m.z;
+        }
+      }
+      break;
+    }
     case "respawn": {
       if (m.id === net.id) {
         player.position.set(m.x, 1, m.z);
@@ -2672,47 +2726,78 @@ function aimDirection(eye) {
   return dir.normalize();
 }
 
-// Mr. Land: lock onto the nearest visible target and deal 20 damage per second.
+// Mr. Land / Cleetus form switch. X is the ultimate; Shift is reserved for desk sprint.
+function switchLandForm() {
+  if (!playing || dead || paused || current.kind !== "land") return;
+  landForm = landForm === "land" ? "cleetus" : "land";
+  loadBodyPicture(landForm === "land" ? "mrland.png" : "cleetus.png");
+  hpName.textContent = myName.toUpperCase() + "  ·  " + (landForm === "land" ? "MR. LAND" : "CLEETUS");
+  addFeedText("Switched to " + (landForm === "land" ? "Mr. Land" : "Cleetus") + " — UNDER DEVELOPMENT");
+  // Tell the multiplayer server which appearance other players should render.
+  // The server must accept the `cleetus` character key for this to sync online.
+  if (mode === "online" && net && net.ready) {
+    netSend({ t: "switch", char: landForm === "land" ? "land" : "cleetus" });
+  }
+}
+
+function nearestLandTarget(maxRange = 10) {
+  let bestTarget = null;
+  let bestDistance = maxRange;
+  const consider = (entity, type, position, alive) => {
+    if (!alive) return;
+    const d = Math.hypot(position.x - player.position.x, position.z - player.position.z);
+    if (d < bestDistance && hasLineOfSight(player.position, position)) {
+      bestDistance = d;
+      bestTarget = { entity, type, distance: d };
+    }
+  };
+  for (const bot of bots) consider(bot, "bot", bot.mesh.position, bot.alive);
+  for (const remote of remotes.values()) consider(remote, "remote", remote.mesh.position, remote.alive);
+  return bestTarget;
+}
+
+// Left click: automatically locks onto the closest bot/player within 10 metres, 20 DPS.
 let landDamageTick = -99999;
 function landAutoAimAttack() {
   if (!playing || dead || paused || current.kind !== "land" || !document.pointerLockElement) return;
   const now = performance.now();
   if (now - landDamageTick < 1000) return;
-  let target = null, best = 22;
-  for (const bot of bots) {
-    if (!bot.alive) continue;
-    const d = Math.hypot(bot.mesh.position.x - player.position.x, bot.mesh.position.z - player.position.z);
-    if (d < best && hasLineOfSight(player.position, bot.mesh.position)) { best = d; target = bot; }
+  const target = nearestLandTarget(10);
+  if (!target) return;
+  landDamageTick = now;
+  if (target.type === "bot") {
+    damageBot(target.entity, 20, "land", "player");
+    hitmarker(target.entity.health <= 20);
+  } else if (mode === "online") {
+    // The online server applies its configured phone hit damage to this player.
+    netSend({ t: "hit", target: target.entity.id, k: "landphone" });
+    hitmarker(false);
   }
-  if (target) {
-    landDamageTick = now;
-    damageBot(target, 20, "land", "player");
-    hitmarker(target.health <= 20);
-    addFeedText("Mr. Land locked on: -20 HP");
-  }
+  addFeedText((landForm === "land" ? "Mr. Land" : "Cleetus") + " auto-locked target in 10m");
 }
 
-// Big phone: 40 damage, knockback about 3 metres, and a 1-second stun.
+// Right click: big phone, 7s cooldown. Bots get 40 damage + knockback + stun.
 function fireLandPhone() {
   const now = performance.now();
   if (current.kind !== "land" || now - lastLandPhone < current.landPhoneCooldown) return;
   lastLandPhone = now;
-  let target = null, best = 28;
-  for (const bot of bots) {
-    if (!bot.alive) continue;
-    const d = Math.hypot(bot.mesh.position.x - player.position.x, bot.mesh.position.z - player.position.z);
-    if (d < best && hasLineOfSight(player.position, bot.mesh.position)) { best = d; target = bot; }
-  }
+  const target = nearestLandTarget(10);
   throwAnim = 1;
-  if (!target) { addFeedText("Big Phone fired — no target in range"); return; }
-  damageBot(target, 40, "land", "player");
-  const dx = target.mesh.position.x - player.position.x;
-  const dz = target.mesh.position.z - player.position.z;
+  if (!target) { addFeedText("Big Phone fired — no target within 10m"); return; }
+  const position = target.type === "bot" ? target.entity.mesh.position : target.entity.mesh.position;
+  const dx = position.x - player.position.x;
+  const dz = position.z - player.position.z;
   const len = Math.hypot(dx, dz) || 1;
-  target.mesh.position.x += dx / len * 3;
-  target.mesh.position.z += dz / len * 3;
-  target.stunnedUntil = now + 1000;
-  addFeedText("BIG PHONE! 40 damage • knockback • 1s stun");
+  if (target.type === "bot") {
+    damageBot(target.entity, 40, "land", "player");
+    position.x += dx / len * 3;
+    position.z += dz / len * 3;
+    target.entity.stunnedUntil = now + 1000;
+  } else if (mode === "online") {
+    // Server-authoritative 40-damage big phone, knockback, and stun.
+    netSend({ t: "hit", target: target.entity.id, k: "landbig" });
+  }
+  addFeedText("BIG PHONE! Auto-aim • knockback/stun apply to local bots");
   const phone = new THREE.Mesh(phoneGeo, phoneMat);
   phone.scale.set(2.2 * phoneAspect, 2.2, 1);
   phone.position.copy(player.position).add(new THREE.Vector3(dx / len * 1.2, 0.5, dz / len * 1.2));
@@ -3935,7 +4020,8 @@ function abilityDefs() {
       tiles: [
         { key: "LMB", name: "Auto Aim (20 DPS)", icon: ICON.phones },
         { key: "RMB", name: "Big Phone", icon: ICON.grenade, cd: () => [lastLandPhone, current.landPhoneCooldown] },
-        { key: "L SHIFT", name: "Land / Cleetus", icon: ICON.dash },
+        { key: "SHIFT", name: "Rolling desk sprint", icon: ICON.dash },
+        { key: "X", name: "Switch to Cleetus", icon: ICON.dash },
         { key: "Q", name: "Desk Sprint", icon: ICON.dash },
       ],
       ultIcon: ICON.sun,
@@ -4243,13 +4329,13 @@ function animate() {
 
   // Movement (not while the Esc menu is open)
   if (playing && !dead && !paused && ultPhase === 0 && now >= holdUntil) {
-    const moveSpeed = (shieldUp ? speed * current.shieldSpeed : speed) * (now < slowUntil ? 0.5 : 1) * (current.kind === "land" && (keys.ShiftRight || now < landSprintUntil) ? 2.0 : 1);
+    const moveSpeed = (shieldUp ? speed * current.shieldSpeed : speed) * (now < slowUntil ? 0.5 : 1) * (current.kind === "land" && (keys.ShiftLeft || keys.ShiftRight || now < landSprintUntil) ? 2.0 : 1);
     const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
     const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
-    if (keys.KeyW) player.position.addScaledVector(forward, moveSpeed);
-    if (keys.KeyS) player.position.addScaledVector(forward, -moveSpeed);
-    if (keys.KeyD) player.position.addScaledVector(right, moveSpeed);
-    if (keys.KeyA) player.position.addScaledVector(right, -moveSpeed);
+    if (now >= landStunnedUntil && keys.KeyW) player.position.addScaledVector(forward, moveSpeed);
+    if (now >= landStunnedUntil && keys.KeyS) player.position.addScaledVector(forward, -moveSpeed);
+    if (now >= landStunnedUntil && keys.KeyD) player.position.addScaledVector(right, moveSpeed);
+    if (now >= landStunnedUntil && keys.KeyA) player.position.addScaledVector(right, -moveSpeed);
 
     // Dash glide + red trail
     if (dashFrames > 0) {
@@ -4276,6 +4362,7 @@ function animate() {
   }
   checkPads(now);
   player.rotation.y = yaw;
+  landDesk.visible = current.kind === "land" && (keys.ShiftLeft || keys.ShiftRight) && !firstPerson && !dead;
 
   // Online: tell the server where you are (20 times a second)
   if (mode === "online" && net && net.ready && playing && !dead && now - lastNetSend > NET_RATE) {
