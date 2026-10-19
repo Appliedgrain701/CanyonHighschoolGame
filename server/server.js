@@ -2,7 +2,7 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const SERVER_VERSION = 17; // protocol version; differing versions do not imply a stale deployment
+const SERVER_VERSION = 18; // protocol version; differing versions do not imply a stale deployment
 // Shared arena dimensions: keep game.js and server.js in sync.
 const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
 // Shared procedural Roundabout geometry. X=east, Z=south; north is -Z.
@@ -380,6 +380,15 @@ function switchTeacher(p, m) {
 // ---------- messages ----------
 function onMessage(p, m) {
   if (!m || typeof m.t !== "string") return;
+  if (m.t === "population") {
+    const now = Date.now();
+    if (p.lastPopulationAt != null && now - p.lastPopulationAt < 1000) return;
+    p.lastPopulationAt = now;
+    const counts = {football:0, roundabout:0};
+    for (const room of rooms.values()) counts[room.map === "roundabout" ? "roundabout" : "football"] += room.players.size;
+    send(p, {t:"population", counts});
+    return;
+  }
   if (m.t === "join") return join(p, m);
   const room = p.room;
   if (!room) return;
@@ -407,6 +416,19 @@ function onMessage(p, m) {
     return;
   }
 
+  if (m.t === "chat") {
+    if (!p.ready || typeof m.text !== "string") return;
+    const text = m.text.replace(/[\x00-\x1f\x7f]/g, " ").trim().slice(0, 200);
+    if (!text) return;
+    const now = Date.now();
+    if (p.lastChatAt != null && now - p.lastChatAt < 1000) {
+      send(p, {t:"chatNotice", text:"Please wait a second between messages."});
+      return;
+    }
+    p.lastChatAt = now;
+    broadcast(room, {t:"chat", id:p.id, name:p.name, text});
+    return;
+  }
   if (!p.ready || !p.alive) return;
 
   if (m.t === "balding" && m.active === false) { endBalding(p); return; }
