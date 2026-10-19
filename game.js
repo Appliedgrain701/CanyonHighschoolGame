@@ -1,12 +1,12 @@
 import * as THREE from "three";
 import { SERVER_URL } from "./config.js"; // your Render address lives in config.js
 
-const GAME_BUILD = 17;
+const GAME_BUILD = 18;
 // Shared arena dimensions: keep game.js and server.js in sync.
 const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
 
 const buildBadge = document.createElement("div");
-buildBadge.textContent = "GAME v17 • BOT / OFFLINE";
+buildBadge.textContent = "GAME v18 • BOT / OFFLINE";
 buildBadge.style.cssText = "position:fixed;top:5px;left:8px;z-index:10000;color:#fff;background:#111b;padding:3px 7px;font:11px sans-serif;pointer-events:none";
 document.body.appendChild(buildBadge);
 
@@ -926,6 +926,7 @@ let myName =
 
 // Asks the browser to capture the mouse (it can refuse right after Esc, so errors are ignored)
 function lockPointer() {
+  if (chatOpen) return;
   try {
     renderer.domElement.focus({ preventScroll: true });
   } catch (e) {}
@@ -935,7 +936,7 @@ function lockPointer() {
       r.catch(() => {
         // the first attempt can be refused right after a menu click chain; try once more shortly after
         setTimeout(() => {
-          if (playing && !paused && !document.pointerLockElement) {
+          if (playing && !paused && !chatOpen && !document.pointerLockElement) {
             try {
               const r2 = renderer.domElement.requestPointerLock();
               if (r2 && r2.catch) r2.catch(() => {});
@@ -1614,6 +1615,39 @@ const mapRow = document.createElement("div");
 mapRow.style.cssText = "display:flex;gap:22px;flex-wrap:wrap;justify-content:center;";
 mapOverlay.appendChild(mapRow);
 
+const populationLabels = {};
+let populationSocket = null, populationTimer = null;
+function stopPopulation() {
+  clearInterval(populationTimer);
+  populationTimer = null;
+  const ws = populationSocket; populationSocket = null;
+  if (ws) ws.close();
+}
+function startPopulation() {
+  stopPopulation();
+  for (const label of Object.values(populationLabels)) label.textContent = "Checking online players…";
+  const unavailable = () => { for (const label of Object.values(populationLabels)) label.textContent = "Online count unavailable"; };
+  try {
+    const ws = populationSocket = new WebSocket(SERVER_URL);
+    const poll = () => { if (ws.readyState === 1) ws.send(JSON.stringify({t:"population"})); };
+    ws.onopen = poll;
+    ws.onmessage = (event) => {
+      if (populationSocket !== ws) return;
+      try {
+        const m = JSON.parse(event.data);
+        if (m.t !== "population") return;
+        for (const [key, label] of Object.entries(populationLabels)) {
+          const n = m.counts && m.counts[key];
+          label.textContent = Number.isInteger(n) && n >= 0 ? n + " player" + (n === 1 ? "" : "s") + " online • all rooms" : "Online count unavailable";
+        }
+      } catch (_) {}
+    };
+    ws.onerror = () => { if (populationSocket === ws) unavailable(); };
+    ws.onclose = () => { if (populationSocket === ws) { unavailable(); clearInterval(populationTimer); } };
+    populationTimer = setInterval(poll, 5000);
+    setTimeout(() => { if (populationSocket === ws && ws.readyState !== 1) unavailable(); }, 10000);
+  } catch (_) { unavailable(); }
+}
 function makeMapCard(name, previewCss, tag, enabled, onClick) {
   const card = document.createElement("div");
   card.style.cssText =
@@ -1633,6 +1667,13 @@ function makeMapCard(name, previewCss, tag, enabled, onClick) {
     (enabled ? "#1f7a45" : "#2a3763") + ';">' + tag + "</div>";
   card.appendChild(prev);
   card.appendChild(info);
+  if (enabled) {
+    const count = document.createElement("div");
+    count.style.cssText = "padding:0 16px 14px;color:#9ed9ff;font:13px sans-serif;";
+    count.textContent = "Checking online players…";
+    populationLabels[name === "THE ROUNDABOUT" ? "roundabout" : "football"] = count;
+    card.appendChild(count);
+  }
   if (enabled) {
     card.addEventListener("mouseenter", () => {
       card.style.transform = "translateY(-8px)";
@@ -1669,6 +1710,7 @@ const mapBack = document.createElement("div");
 mapBack.textContent = "< Back";
 mapBack.style.cssText = "margin-top:30px;font-size:16px;cursor:pointer;text-decoration:underline;opacity:0.8;";
 mapBack.addEventListener("click", () => {
+  stopPopulation();
   mapOverlay.style.display = "none";
   modeOverlay.style.display = "flex";
 });
@@ -1682,9 +1724,11 @@ function chooseMode(kind) {
   mapSub.textContent = MODE_NAMES[kind] + "  |  PLAYING AS " + myName.toUpperCase();
   modeOverlay.style.display = "none";
   mapOverlay.style.display = "flex";
+  startPopulation();
 }
 // Map screen -> the chosen mode
 function proceedFromMap() {
+  stopPopulation();
   applyMap(selectedMap);
   mapOverlay.style.display = "none";
   if (pendingMode === "bots") startBotMode();
@@ -2076,9 +2120,59 @@ function damagePlayer(amount, attacker) {
   updateHealthBar();
 }
 
+// Room chat sits directly above the ability / ultimate bar.
+let chatOpen = false;
+const chatPanel = document.createElement("div");
+chatPanel.style.cssText = "position:fixed;right:22px;bottom:130px;width:min(340px,calc(100vw - 44px));z-index:8;font:13px sans-serif;color:white;pointer-events:none;display:none;";
+const chatLog = document.createElement("div");
+chatLog.style.cssText = "max-height:165px;overflow-y:auto;overflow-wrap:anywhere;background:rgba(8,15,30,.72);border-radius:8px;padding:8px;text-shadow:0 1px 2px black;";
+chatLog.setAttribute("role", "log"); chatLog.setAttribute("aria-live", "polite");
+const chatHint = document.createElement("div"); chatHint.textContent = "Enter • room chat";
+chatHint.style.cssText = "padding:5px;color:#acdcff;font-size:11px;";
+const chatInput = document.createElement("input");
+chatInput.maxLength = 200; chatInput.placeholder = "Message room… Enter to send • Esc to cancel";
+chatInput.setAttribute("aria-label", "Room chat message");
+chatInput.style.cssText = "box-sizing:border-box;width:100%;padding:10px;border:1px solid #77caff;border-radius:6px;background:#101b30;color:white;display:none;pointer-events:auto;";
+chatPanel.append(chatLog, chatHint, chatInput); document.body.appendChild(chatPanel);
+function addChatMessage(name, message) {
+  const row = document.createElement("div"); row.style.padding = "3px 0";
+  row.textContent = String(name).slice(0,40) + ": " + String(message).slice(0,200);
+  chatLog.appendChild(row);
+  while (chatLog.children.length > 40) chatLog.removeChild(chatLog.firstChild);
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+function closeChat(relock = true) {
+  chatOpen = false; chatInput.value = ""; chatInput.style.display = "none";
+  chatLog.style.pointerEvents = "none"; chatInput.blur();
+  justSelectedAt = performance.now();
+  if (relock && playing && !paused) lockPointer();
+}
+function openChat() {
+  if (!playing || paused || mode !== "online" || !net || !net.ready) return;
+  chatOpen = true; mouseHeld = false; rightHeld = false;
+  for (const key of Object.keys(keys)) keys[key] = false;
+  stopVoice();
+  if (document.pointerLockElement) document.exitPointerLock();
+  chatInput.style.display = "block"; chatLog.style.pointerEvents = "auto";
+  chatInput.focus();
+}
+chatInput.addEventListener("keydown", (e) => {
+  e.stopPropagation();
+  if (e.code === "Enter" && !e.isComposing) {
+    e.preventDefault();
+    const message = chatInput.value.trim();
+    if (message) netSend({t:"chat", text:message});
+    closeChat();
+  } else if (e.code === "Escape") { e.preventDefault(); closeChat(); }
+});
+chatInput.addEventListener("keyup", e => e.stopPropagation());
 // ================= INPUT =================
 const keys = {};
 addEventListener("keydown", (e) => {
+  if (e.code === "Enter" && !e.repeat && playing && mode === "online" && !paused) {
+    e.preventDefault(); openChat(); return;
+  }
+  if (chatOpen) return;
   keys[e.code] = true;
   // Esc closes the pause menu (ignored for a moment so the Esc that opened it doesn't close it)
   if (
@@ -2145,10 +2239,10 @@ addEventListener("resize", () => {
 });
 
 renderer.domElement.addEventListener("click", () => {
-  if (playing && !paused) lockPointer();
+  if (playing && !paused && !chatOpen) { getAudio(); lockPointer(); }
 });
 addEventListener("mousemove", (e) => {
-  if (document.pointerLockElement && ultPhase !== 1) {
+  if (!chatOpen && document.pointerLockElement && ultPhase !== 1) {
     yaw -= e.movementX * 0.003;
     pitch -= e.movementY * 0.003;
     pitch = Math.max(-1, Math.min(1, pitch));
@@ -2157,7 +2251,7 @@ addEventListener("mousemove", (e) => {
 
 // Primary attacks are held with the left mouse button.
 addEventListener("mousedown", (e) => {
-  if (!playing || dead || paused || !document.pointerLockElement || performance.now() < landStunUntil || performance.now() < holdUntil) return;
+  if (chatOpen || !playing || dead || paused || !document.pointerLockElement || performance.now() < landStunUntil || performance.now() < holdUntil) return;
   if (current.kind === "applebee" && honeyChoiceUntil > performance.now()) {
     if (e.button === 0) resolveHoney("apple");
     else if (e.button === 2) resolveHoney("bee");
@@ -2196,7 +2290,7 @@ document.addEventListener("pointerlockchange", () => {
     // Skip this for a moment right after picking a teacher, since some browsers
     // fire this same event when the lock request itself just failed or is still
     // settling, which would otherwise bounce you straight into the pause menu.
-    if (playing && !paused && overlay.style.display === "none" && performance.now() - justSelectedAt > 800) {
+    if (playing && !paused && !chatOpen && overlay.style.display === "none" && performance.now() - justSelectedAt > 800) {
       showPause();
     }
   }
@@ -2340,7 +2434,7 @@ function clearBots() {
 
 function startBotMode() {
   leaveOnline();
-  buildBadge.textContent = "GAME v17 • " + (selectedMap === "roundabout" ? "ROUNDABOUT" : "STADIUM") + " • BOTS";
+  buildBadge.textContent = "GAME v18 • " + (selectedMap === "roundabout" ? "ROUNDABOUT" : "STADIUM") + " • BOTS";
   clearBots();
   for (let i = 0; i < BOT_COUNT; i++) makeBot(i);
   kills = 0;
@@ -2799,6 +2893,7 @@ function updateRemotes(dt, now) {
 }
 
 function leaveOnline() {
+  closeChat(false); chatLog.textContent = ""; chatPanel.style.display = "none";
   const n = net;
   net = null;
   mode = "bots";
@@ -2898,13 +2993,19 @@ function startOnline(join) {
 
 function handleNet(m) {
   switch (m.t) {
+    case "chat":
+      addChatMessage(m.name, m.text);
+      return;
+    case "chatNotice":
+      addChatMessage("System", m.text);
+      return;
     case "welcome": {
       if (m.v !== GAME_BUILD) {
-        buildBadge.textContent = "GAME v17 / SERVER v" + m.v + " — UPDATE BOTH FILES";
-        failOnline("Version mismatch: game v17 needs server v17. Replace both files and restart the server, then refresh the game.");
+        buildBadge.textContent = "GAME v18 / SERVER v" + m.v + " — UPDATE BOTH FILES";
+        failOnline("Version mismatch: game v18 needs server v18. Replace both files and restart the server, then refresh the game.");
         return;
       }
-      buildBadge.textContent = "GAME v17 / SERVER v17 • " + (m.map === "roundabout" ? "ROUNDABOUT" : "STADIUM");
+      buildBadge.textContent = "GAME v18 / SERVER v18 • " + (m.map === "roundabout" ? "ROUNDABOUT" : "STADIUM");
       applyMap(m.map || "football");
       net.id = m.id;
       net.code = m.code;
@@ -3099,7 +3200,7 @@ function handleFx(m) {
     arr.push(makeMineMesh(a[0], a[1], a[2]));
     if (arr.length > 3) scene.remove(arr.shift());
     remoteMines.set(m.id, arr);
-  } else if (m.k === "x") {
+  } else if (m.k === "x" || m.k === "mr") {
     const arr = remoteMines.get(m.id) || [];
     let bi = -1, bd = 2;
     arr.forEach((g, i) => {
@@ -3109,7 +3210,7 @@ function handleFx(m) {
     if (bi >= 0) {
       scene.remove(arr[bi]);
       arr.splice(bi, 1);
-      boomAt(new THREE.Vector3(a[0], a[1] + 0.5, a[2]), 2.5);
+      if (m.k === "x") boomAt(new THREE.Vector3(a[0], a[1] + 0.5, a[2]), 2.5);
     }
   } else if (m.k === "c") clearRemoteMines(m.id);
   else if (m.k === "q") addFeedText(r.name + " unleashed the BEE BEAST!");
@@ -3317,6 +3418,7 @@ function updateLandBeam(dt, now) {
 
 // ================= MR. MAHONEY: PHONE BURST =================
 const bullets = [];
+const PHONE_HIT_RADIUS = 1.7; // forgiving Mahoney primary contact radius (previously 1.2m)
 const PHONE_SIZE = 0.9; // length of the flying phone
 const PHONE_SPIN = 0.4; // spin speed: 0 = no spin
 
@@ -3467,8 +3569,9 @@ function throwGrenade() {
 }
 
 function explode(pos, fx) {
+  playExplosionSound(pos);
   const boom = new THREE.Mesh(
-    new THREE.SphereGeometry(current.grenadeRadius, 16, 16),
+    new THREE.SphereGeometry(characters.mahoney.grenadeRadius, 16, 16),
     new THREE.MeshBasicMaterial({ color: 0xff8800, transparent: true, opacity: 0.5 })
   );
   boom.position.copy(pos);
@@ -3480,15 +3583,15 @@ function explode(pos, fx) {
     if (!bot.alive) continue;
     const dx = bot.mesh.position.x - pos.x;
     const dz = bot.mesh.position.z - pos.z;
-    if (Math.hypot(dx, dz) < current.grenadeRadius + 0.5) {
-      damageBot(bot, current.grenadeDamage, undefined, "player");
+    if (Math.hypot(dx, dz) < characters.mahoney.grenadeRadius + 0.5) {
+      damageBot(bot, characters.mahoney.grenadeDamage, undefined, "player");
     }
   }
   for (const r of remotes.values()) {
     if (!r.alive) continue;
     const dx = r.mesh.position.x - pos.x;
     const dz = r.mesh.position.z - pos.z;
-    if (Math.hypot(dx, dz) < current.grenadeRadius + 0.5) {
+    if (Math.hypot(dx, dz) < characters.mahoney.grenadeRadius + 0.5) {
       netSend({ t: "hit", target: r.id, k: "grenade" });
     }
   }
@@ -3905,6 +4008,7 @@ function makeMineMesh(x, y, z) {
   return g;
 }
 function boomAt(pos, radius, color = 0xff3b3b) {
+  playExplosionSound(pos);
   const boom = new THREE.Mesh(
     new THREE.SphereGeometry(radius, 16, 16),
     new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.5 })
@@ -3922,7 +4026,7 @@ function placeMine() {
   while (mines.length >= current.maxMines) {
     const old = mines.shift();
     scene.remove(old.g);
-    netFx("x", [old.x, old.y, old.z]);
+    netFx("mr", [old.x, old.y, old.z]);
   }
   mines.push({ g: makeMineMesh(x, y, z), x, y, z, armAt: performance.now() + 700 });
   netFx("m", [x, y, z]);
@@ -4471,6 +4575,30 @@ function getAudio() {
   } catch (e) { return null; }
   return audioCtx;
 }
+let lastExplosionSounds = [];
+function playExplosionSound(pos) {
+  if (!playing) return;
+  const distance = player.position.distanceTo(pos);
+  if (distance > 65) return;
+  const ac = getAudio();
+  if (!ac) return;
+  const t = ac.currentTime;
+  lastExplosionSounds = lastExplosionSounds.filter(time => t - time < 0.15);
+  if (lastExplosionSounds.length >= 4) return;
+  lastExplosionSounds.push(t);
+  const volume = 0.45 * Math.pow(1 - distance / 65, 2);
+  const buffer = ac.createBuffer(1, Math.floor(ac.sampleRate * 0.65), ac.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+  const noise = ac.createBufferSource(), filter = ac.createBiquadFilter(), gain = ac.createGain();
+  noise.buffer = buffer; filter.type = "lowpass";
+  filter.frequency.setValueAtTime(1800, t); filter.frequency.exponentialRampToValueAtTime(100, t + 0.6);
+  gain.gain.setValueAtTime(volume, t); gain.gain.exponentialRampToValueAtTime(0.001, t + 0.65);
+  noise.connect(filter); filter.connect(gain); gain.connect(ac.destination);
+  noise.onended = () => { noise.disconnect(); filter.disconnect(); gain.disconnect(); };
+  noise.start(t); noise.stop(t + 0.65);
+  tone(100, 28, 0.5, "sine", volume, 0);
+}
 function tone(freq, freq2, dur, type, vol, delay) {
   const ac = getAudio();
   if (!ac) return;
@@ -4779,6 +4907,7 @@ function updateAbilityBar(now) {
   // Display Land's primary, but keep his ultimate hidden.
   const show = playing;
   abBar.style.display = show ? "flex" : "none";
+  chatPanel.style.display = playing && !paused && mode === "online" ? "block" : "none";
   sideKeys.style.display = playing ? "flex" : "none"; // camera and voice controls still work
   if (!show) return;
   if (abKind !== (current.kind || "mahoney")) buildAbilityBar();
@@ -5098,7 +5227,7 @@ function animate() {
     if (!b.userData.fx) {
       let hitBot = null;
       for (const bot of bots) {
-        if (bot.alive && b.position.distanceTo(bot.mesh.position) < 1.2) {
+        if (bot.alive && b.position.distanceTo(bot.mesh.position) < PHONE_HIT_RADIUS) {
           hitBot = bot;
           break;
         }
@@ -5113,7 +5242,7 @@ function animate() {
 
       let hitRemote = null;
       for (const r of remotes.values()) {
-        if (r.alive && b.position.distanceTo(r.mesh.position) < 1.2) {
+        if (r.alive && b.position.distanceTo(r.mesh.position) < PHONE_HIT_RADIUS) {
           hitRemote = r;
           break;
         }
