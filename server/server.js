@@ -2,7 +2,9 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const SERVER_VERSION = 14; // protocol version; differing versions do not imply a stale deployment
+const SERVER_VERSION = 15; // protocol version; differing versions do not imply a stale deployment
+// Shared arena dimensions: keep game.js and server.js in sync.
+const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
 const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 30;
 const RESPAWN_MS = 3000;
@@ -349,8 +351,8 @@ function onMessage(p, m) {
     return;
   }
   if (m.t === "st") {
-    p.x = num(m.x, -50, 50, p.x);
-    p.z = num(m.z, -50, 50, p.z);
+    p.x = num(m.x, -MAP.limitX, MAP.limitX, p.x);
+    p.z = num(m.z, -MAP.limitZ, MAP.limitZ, p.z);
     p.yaw = num(m.yaw, -1000, 1000, p.yaw);
     p.pitch = num(m.pitch, -2, 2, p.pitch);
     p.sh = p.char !== "land" && m.sh ? 1 : 0;
@@ -367,7 +369,7 @@ function onMessage(p, m) {
     if (p.char === "land") return;
     // the beast owner says where the grabbed players are; tell each grabbed player to move there
     const ids = Array.isArray(m.ids) ? m.ids.slice(0, 11) : [];
-    const hx = num(m.x, -50, 50, 0), hy = num(m.y, -2, 30, 1), hz = num(m.z, -50, 50, 0);
+    const hx = num(m.x, -MAP.limitX, MAP.limitX, 0), hy = num(m.y, -2, 30, 1), hz = num(m.z, -MAP.limitZ, MAP.limitZ, 0);
     const nowH = Date.now();
     for (const id of ids) {
       const t = room.players.get(id);
@@ -434,9 +436,6 @@ wss.on("connection", (ws) => {
 
 // Collision map mirrors game.js; update both when editing arena geometry.
 const walls = [
-  // fences around the field (side fences are low so you can see the bleachers)
-  { x: 0, z: -47, w: 48, d: 2, h: 6, color: 0x444444 },
-  { x: 0, z: 47, w: 48, d: 2, h: 6, color: 0x444444 },
   // cover (equipment and benches)
   { x: -10, z: -22, w: 5, d: 2, h: 3, color: 0x1a2a6c },
   { x: 10, z: -22, w: 5, d: 2, h: 3, color: 0x1a2a6c },
@@ -447,8 +446,8 @@ const walls = [
 ];
 
 // ===== walkable bleachers, announcer room, stairs =====
-function fence(x, z0, z1) { walls.push({ x, z: (z0 + z1) / 2, w: 2, d: z1 - z0, h: 2.5, color: 0x444444 }); }
-for (const sx of [-23, 23]) { fence(sx, -48, -39); fence(sx, -33, -6); fence(sx, 6, 33); fence(sx, 39, 48); }
+// No field-side fences: players can cross freely onto the track.
+const bleacherStart = walls.length;
 for (const side of [-1, 1]) {
   for (let i = 0; i < 8; i++) {
     const top = 0.5 * (i + 1);
@@ -470,6 +469,15 @@ walls.push(
 for (let k = 0; k < 12; k++) {
   walls.push({ x: -44, z: 27 - 1.25 * (k + 0.5), w: 4, d: 1.25, h: 0.5 * (k + 1), color: k % 2 ? 0x777777 : 0x999999 });
 }
+// Move both bleacher banks and the announcer building 20m toward the map edges.
+for (let i = bleacherStart; i < walls.length; i++) walls[i].x += Math.sign(walls[i].x) * 20;
+// Fence only the expanded outer perimeter, beyond the track and bleachers.
+walls.push(
+  { x: 0, z: -MAP.halfZ, w: MAP.halfX * 2, d: 1, h: 3, color: 0x444444 },
+  { x: 0, z: MAP.halfZ, w: MAP.halfX * 2, d: 1, h: 3, color: 0x444444 },
+  { x: -MAP.halfX, z: 0, w: 1, d: MAP.halfZ * 2, h: 3, color: 0x444444 },
+  { x: MAP.halfX, z: 0, w: 1, d: MAP.halfZ * 2, h: 3, color: 0x444444 }
+);
 
 const wallBoxes = walls.map(w => ({ minX: w.x-w.w/2, maxX: w.x+w.w/2, minZ: w.z-w.d/2, maxZ: w.z+w.d/2, y0: w.y0 || 0, h: w.h || 6 }));
 function landLineClear(a, b) {
@@ -514,7 +522,7 @@ function landKnockback(from, target) {
   const out = { x: target.x, y: target.y, z: target.z };
   for (let step = 1; step <= 30; step++) {
     const x = target.x + ux * step * 0.1, z = target.z + uz * step * 0.1;
-    if (Math.abs(x) > 48 || Math.abs(z) > 48) break;
+    if (Math.abs(x) > MAP.limitX || Math.abs(z) > MAP.limitZ) break;
     if (wallBoxes.some(b => target.y - 1 < b.h && target.y + 1 > b.y0 &&
       x > b.minX - 0.6 && x < b.maxX + 0.6 && z > b.minZ - 0.6 && z < b.maxZ + 0.6)) break;
     out.x = x; out.z = z;
