@@ -387,8 +387,9 @@ const characters = {
     health: 225,
     speed: 0.15,
     // Primary: auto-lock phone beam. Other abilities are disabled.
-    primaryRange: 10, primaryDps: 20,
-    desc: "Health: 225<br>Hold Left Click: Phone Beam (20 damage/sec, 10m auto-lock)<br>Other abilities: none",
+    primaryRange: 20, primaryDps: 38,
+    blastCooldown: 7000, blastDamage: 52, blastRange: 20,
+    desc: "Health: 225<br>Hold Left Click: Phone Beam (38 damage/sec, 20m auto-lock)<br>Right Click: Phone Blast (52 damage, 7s cooldown, +30 shield on hit, 3m knockback + 1s stun)",
     ultCost: 100, ultStartCharge: 0, ultPassivePerSec: 0,
     ultPerDamage: 0, ultPerKill: 0,
   },
@@ -1460,7 +1461,7 @@ for (const key in characters) {
   });
   if (key === "land") {
     const status = document.createElement("div");
-    status.textContent = "PHONE BEAM · 20 DPS · 10m";
+    status.textContent = "PHONE BEAM + PHONE BLAST";
     status.style.cssText = "padding:7px 4px;text-align:center;font-size:10px;font-weight:900;letter-spacing:1.5px;color:#ffcc2f;background:#080d1c;";
     card.appendChild(status);
   }
@@ -1497,6 +1498,7 @@ function selectCharacter(key) {
   lastAttacker = null;
 
   stopLandBeam();
+  landStunUntil = 0;
   current = characters[key];
   player.material.color.setHex(current.color);
   loadBodyPicture(current.picture);
@@ -1646,7 +1648,7 @@ addEventListener("keydown", (e) => {
   // ` (backtick, top-left of the keyboard on a Chromebook too) = push to talk
   if (e.code === "Backquote" && !e.repeat && playing) startVoice();
 
-  if (!playing || dead || paused || ultPhase !== 0 || e.repeat || performance.now() < holdUntil) return;
+  if (!playing || dead || paused || ultPhase !== 0 || e.repeat || performance.now() < holdUntil || performance.now() < landStunUntil) return;
   // Mr. Land has no active abilities yet.
   if (current.kind === "land") return;
   if (e.code === "KeyQ") {
@@ -1692,14 +1694,14 @@ addEventListener("mousemove", (e) => {
 
 // Primary attacks are held with the left mouse button.
 addEventListener("mousedown", (e) => {
-  if (!playing || dead || paused || !document.pointerLockElement) return;
+  if (!playing || dead || paused || !document.pointerLockElement || performance.now() < landStunUntil || performance.now() < holdUntil) return;
   if (current.kind === "applebee" && honeyChoiceUntil > performance.now()) {
     if (e.button === 0) resolveHoney("apple");
     else if (e.button === 2) resolveHoney("bee");
     return;
   }
   if (e.button === 2) {
-    if (current.kind === "land") return; // Right-click has no action yet.
+    if (current.kind === "land") { fireLandBlast(); return; }
     if (current.kind === "applebee") {
       fireBeeGun();
       return;
@@ -2494,6 +2496,7 @@ function handleNet(m) {
     }
     case "respawn": {
       if (m.id === net.id) {
+        landStunUntil = 0;
         player.position.set(m.x, 1, m.z);
         playerHealth = m.hp;
         bonusShield = m.bonus || 0;
@@ -2524,6 +2527,19 @@ function handleNet(m) {
       slowUntil = Math.max(slowUntil, nowS + (m.ms || 2000));
       break;
     }
+    case "landstun": {
+      landStunUntil = performance.now() + m.ms;
+      landStunPos.set(m.x, m.y, m.z);
+      player.position.copy(landStunPos);
+      velY = 0;
+      dashFrames = 0;
+      meleeStart = 0;
+      rightHeld = false;
+      shieldUp = false;
+      stopLandBeam();
+      addFeedText("STUNNED — 1 second!");
+      break;
+    }
     case "hold": {
       if (performance.now() >= holdUntil) addFeedText("TAKEN by the bee beast!");
       holdUntil = performance.now() + 250;
@@ -2539,10 +2555,15 @@ function handleNet(m) {
 
 // Shows other players' phones, grenades and beams on your screen (visual only)
 function handleFx(m) {
+  const a = m.a || [];
+  if (m.k === "ls" && m.id === net?.id) {
+    spawnLandBlastFx(new THREE.Vector3(a[0], a[1], a[2]), new THREE.Vector3(a[3], a[4], a[5]));
+    return;
+  }
   const r = remotes.get(m.id);
   if (!r) return;
-  const a = m.a || [];
-  if (m.k === "lb") {
+  if (m.k === "ls") spawnLandBlastFx(new THREE.Vector3(a[0], a[1], a[2]), new THREE.Vector3(a[3], a[4], a[5]));
+  else if (m.k === "lb") {
     r.landTarget = a[0];
     r.landBeamAt = performance.now();
   }
@@ -2621,7 +2642,7 @@ function landLineClear(a, b) {
 const landPhoneMaterial = new THREE.SpriteMaterial({ map: phoneTexture, transparent: true, alphaTest: 0.05, depthWrite: false });
 function makeLandBeam() {
   const group = new THREE.Group();
-  for (let i = 0; i < 40; i++) group.add(new THREE.Sprite(landPhoneMaterial));
+  for (let i = 0; i < 80; i++) group.add(new THREE.Sprite(landPhoneMaterial));
   group.visible = false;
   scene.add(group);
   return group;
@@ -2647,9 +2668,92 @@ function stopLandBeam() {
   if (landSentTarget) netSend({ t: "landlock", target: 0 });
   landSentTarget = 0;
 }
+function landShotTarget(origin, dir, targets, range) {
+  let best = null, bestDistance = range;
+  for (const target of targets) {
+    if (!target.alive) continue;
+    const dx = target.x - origin.x, dy = target.y + 0.5 - origin.y, dz = target.z - origin.z;
+    if (Math.hypot(dx, dy, dz) > range) continue;
+    const along = dx * dir.x + dy * dir.y + dz * dir.z;
+    if (along < 0 || along > bestDistance) continue;
+    const off = dx * dx + dy * dy + dz * dz - along * along;
+    if (off > 0.85 * 0.85) continue;
+    if (!landLineClear(origin, { x: target.x, y: target.y + 0.5, z: target.z })) continue;
+    best = target;
+    bestDistance = along;
+  }
+  return best;
+}
+function landKnockback(from, target) {
+  const dx = target.x - from.x, dz = target.z - from.z;
+  const length = Math.hypot(dx, dz);
+  const ux = length > 0.001 ? dx / length : -Math.sin(from.yaw || 0);
+  const uz = length > 0.001 ? dz / length : -Math.cos(from.yaw || 0);
+  const out = { x: target.x, y: target.y, z: target.z };
+  for (let step = 1; step <= 30; step++) {
+    const x = target.x + ux * step * 0.1, z = target.z + uz * step * 0.1;
+    if (Math.abs(x) > 48 || Math.abs(z) > 48) break;
+    if (wallBoxes.some(b => target.y - 1 < b.h && target.y + 1 > b.y0 &&
+      x > b.minX - 0.6 && x < b.maxX + 0.6 && z > b.minZ - 0.6 && z < b.maxZ + 0.6)) break;
+    out.x = x; out.z = z;
+  }
+  return out;
+}
+
+let lastLandBlast = -Infinity;
+let landStunUntil = 0;
+const landStunPos = new THREE.Vector3();
+const landBlastEffects = [];
+function spawnLandBlastFx(origin, end) {
+  const mesh = new THREE.Sprite(landPhoneMaterial);
+  mesh.scale.set(0.9 * phoneAspect, 0.9, 1);
+  mesh.position.copy(origin);
+  scene.add(mesh);
+  landBlastEffects.push({ mesh, origin, end, start: performance.now() });
+}
+function updateLandBlastFx(now) {
+  for (let i = landBlastEffects.length - 1; i >= 0; i--) {
+    const fx = landBlastEffects[i];
+    const t = Math.min(1, (now - fx.start) / 180);
+    fx.mesh.position.lerpVectors(fx.origin, fx.end, t);
+    if (t === 1) { scene.remove(fx.mesh); landBlastEffects.splice(i, 1); }
+  }
+}
+function fireLandBlast() {
+  const now = performance.now();
+  if (current.kind !== "land" || !playing || dead || paused || now < landStunUntil ||
+      now < holdUntil || now - lastLandBlast < current.blastCooldown) return;
+  lastLandBlast = now;
+  const origin = player.position.clone().add(new THREE.Vector3(0, 0.5, 0));
+  const dir = aimDirection(origin);
+  viewKick = 1;
+  if (mode === "online") {
+    netSend({ t: "landblast", dx: dir.x, dy: dir.y, dz: dir.z });
+    return; // server confirms the shot, hit, shield, and stun
+  }
+  const targets = bots.map(bot => ({ ...bot.mesh.position, x: bot.mesh.position.x, y: bot.mesh.position.y, z: bot.mesh.position.z, alive: bot.alive, bot }));
+  const target = landShotTarget(origin, dir, targets, current.blastRange);
+  let end = origin.clone().addScaledVector(dir, current.blastRange);
+  if (target) end.set(target.x, target.y + 0.5, target.z);
+  else for (let d = 0.1; d <= current.blastRange; d += 0.1) {
+    const point = origin.clone().addScaledVector(dir, d);
+    if (insideWall(point)) { end.copy(point); break; }
+  }
+  spawnLandBlastFx(origin, end);
+  if (!target) return;
+  damageBot(target.bot, current.blastDamage, "", "player");
+  bonusShield = Math.min(BONUS_SHIELD, bonusShield + 30);
+  updateHealthBar();
+  if (target.bot.alive) {
+    const pos = landKnockback({ x: player.position.x, z: player.position.z, yaw }, target);
+    target.bot.mesh.position.set(pos.x, pos.y, pos.z);
+    target.bot.stunnedUntil = now + 1000;
+  }
+}
+
 function updateLandBeam(dt, now) {
   const active = current.kind === "land" && playing && !dead && !paused && mouseHeld &&
-    !!document.pointerLockElement && now >= holdUntil;
+    !!document.pointerLockElement && now >= holdUntil && now >= landStunUntil;
   const forward = new THREE.Vector3(-Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
   const eye = player.position.clone().add(new THREE.Vector3(0, 0.5, 0));
   const valid = (target) => {
@@ -2682,7 +2786,7 @@ function updateLandBeam(dt, now) {
   for (const r of remotes.values()) {
     const target = r.landTarget === net?.id ? { mesh: player, alive: !dead } : remotes.get(r.landTarget);
     const show = r.char === "land" && r.alive && target?.alive && now - r.landBeamAt < 300 &&
-      r.mesh.position.distanceTo(target.mesh.position) <= 10;
+      r.mesh.position.distanceTo(target.mesh.position) <= characters.land.primaryRange;
     if (show) {
       if (!r.landBeam) r.landBeam = makeLandBeam();
       drawLandBeam(r.landBeam, r.mesh.position, target.mesh.position, now);
@@ -2758,7 +2862,7 @@ function shoot() {
 }
 
 function tryShoot() {
-  if (!playing || dead || paused || ultPhase !== 0 || shieldUp || meleeStart > 0 || performance.now() < holdUntil) return;
+  if (!playing || dead || paused || ultPhase !== 0 || shieldUp || meleeStart > 0 || performance.now() < holdUntil || performance.now() < landStunUntil) return;
   if (!document.pointerLockElement) return;
   const now = performance.now();
   if (current.kind === "land") return; // No primary attack implemented
@@ -3961,7 +4065,10 @@ function abilityDefs() {
   if (current.kind === "land") {
     return {
       accent: "#65c9ff",
-      tiles: [{ key: "LMB", name: "Phone Beam", icon: ICON.phones, badge: () => "10m" }],
+      tiles: [
+        { key: "LEFT CLICK", name: "Phone Beam", icon: ICON.phones, badge: () => "20m" },
+        { key: "RIGHT CLICK", name: "Phone Blast", icon: ICON.phones, cd: () => [lastLandBlast, current.blastCooldown], badge: () => "52" },
+      ],
       ultIcon: ICON.sun,
     };
   }
@@ -4087,7 +4194,7 @@ function buildAbilityBar() {
   abEls = [];
   for (const t of def.tiles) {
     const wrap = document.createElement("div");
-    wrap.style.cssText = "position:relative;width:58px;height:58px;margin-bottom:12px;";
+    wrap.style.cssText = "position:relative;width:" + (current.kind === "land" ? 92 : 58) + "px;height:58px;margin-bottom:12px;";
     const tile = document.createElement("div");
     tile.style.cssText =
       "position:absolute;inset:0;clip-path:" + CHAMFER + ";background:linear-gradient(135deg," + def.accent + ",#333);";
@@ -4267,10 +4374,10 @@ function animate() {
 
   // Shield is up while you hold right click
   shieldUp =
-    playing && !dead && !paused && current.shieldBlock > 0 && ultPhase === 0 && rightHeld && meleeStart === 0 && !!document.pointerLockElement;
+    playing && !dead && !paused && current.shieldBlock > 0 && ultPhase === 0 && rightHeld && meleeStart === 0 && !!document.pointerLockElement && now >= landStunUntil;
 
   // Movement (not while the Esc menu is open)
-  if (playing && !dead && !paused && ultPhase === 0 && now >= holdUntil) {
+  if (playing && !dead && !paused && ultPhase === 0 && now >= holdUntil && now >= landStunUntil) {
     const moveSpeed = (shieldUp ? speed * current.shieldSpeed : speed) * (now < slowUntil ? 0.5 : 1);
     const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
     const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
@@ -4296,13 +4403,20 @@ function animate() {
     if (mouseHeld && current.kind !== "land") tryShoot();
   }
   pushOutOfWalls(player.position, player.position.y - 1, STEP_HEIGHT);
-  physicsStep(dt, playing && !dead && !paused && ultPhase === 0 && now >= holdUntil);
+  physicsStep(dt, playing && !dead && !paused && ultPhase === 0 && now >= holdUntil && now >= landStunUntil);
   if (now < holdUntil) {
     player.position.lerp(holdPos, 0.6);
     velY = 0;
   }
+  if (now < landStunUntil) {
+    player.position.copy(landStunPos);
+    velY = 0;
+    dashFrames = 0;
+    shieldUp = false;
+  }
   updateLandBeam(dt, now);
-  checkPads(now);
+  updateLandBlastFx(now);
+  if (now >= landStunUntil) checkPads(now);
   player.rotation.y = yaw;
 
   // Online: tell the server where you are (20 times a second)
@@ -4547,7 +4661,7 @@ function animate() {
 
   // Ability text
   if (current.kind === "land") {
-    abilityHud.textContent = "Hold Left Click: Phone Beam · 20 DPS · 10m";
+    abilityHud.textContent = "Hold Left Click: Phone Beam · 38 DPS · 20m | Right Click: Phone Blast · 52 damage · 7s cooldown";
   } else if (current.kind === "applebee") {
     abilityHud.innerHTML =
       (appleReload > 0
