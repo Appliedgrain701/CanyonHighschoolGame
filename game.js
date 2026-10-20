@@ -1,12 +1,12 @@
 import * as THREE from "three";
 import { SERVER_URL } from "./config.js"; // your Render address lives in config.js
 
-const GAME_BUILD = 21;
+const GAME_BUILD = 22;
 // Shared arena dimensions: keep game.js and server.js in sync.
 const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
 
 const buildBadge = document.createElement("div");
-buildBadge.textContent = "GAME v21 • BOT / OFFLINE";
+buildBadge.textContent = "GAME v22 • BOT / OFFLINE";
 buildBadge.style.cssText = "position:fixed;top:5px;left:8px;z-index:10000;color:#fff;background:#111b;padding:3px 7px;font:11px sans-serif;pointer-events:none";
 document.body.appendChild(buildBadge);
 
@@ -1988,7 +1988,7 @@ for (const key in characters) {
   });
   if (key === "land") {
     const status = document.createElement("div");
-    status.textContent = "PHONE BEAM + PHONE BLAST + CLEETUS (X)";
+    status.textContent = "PHONE BEAM + PHONE BLAST";
     status.style.cssText = "padding:7px 4px;text-align:center;font-size:10px;font-weight:900;letter-spacing:1.5px;color:#ffcc2f;background:#080d1c;";
     card.appendChild(status);
   }
@@ -2462,7 +2462,7 @@ function clearBots() {
 
 function startBotMode() {
   leaveOnline();
-  buildBadge.textContent = "GAME v21 • " + (selectedMap === "roundabout" ? "ROUNDABOUT" : "STADIUM") + " • BOTS";
+  buildBadge.textContent = "GAME v22 • " + (selectedMap === "roundabout" ? "ROUNDABOUT" : "STADIUM") + " • BOTS";
   clearBots();
   for (let i = 0; i < BOT_COUNT; i++) makeBot(i);
   kills = 0;
@@ -2852,7 +2852,7 @@ function setRemoteChar(r, key) {
   }
   r.mesh.material.visible = true;
   r.head.visible = true;
-  const picture = key === "land" && r.cleetus ? "Cleetus.png" : characters[key].picture;
+  const picture = key === "land" && r.cleetus ? "cleetus.png" : characters[key].picture;
   r.picture = picture;
   texLoader.load(picture, (t) => {
     if (remotes.get(r.id) !== r || r.char !== key || r.picture !== picture) return;
@@ -3045,11 +3045,11 @@ function handleNet(m) {
       return;
     case "welcome": {
       if (m.v !== GAME_BUILD) {
-        buildBadge.textContent = "GAME v21 / SERVER v" + m.v + " — UPDATE BOTH FILES";
-        failOnline("Version mismatch: game v21 needs server v21. Replace both files and restart the server, then refresh the game.");
+        buildBadge.textContent = "GAME v22 / SERVER v" + m.v + " — UPDATE BOTH FILES";
+        failOnline("Version mismatch: game v22 needs server v22. Replace both files and restart the server, then refresh the game.");
         return;
       }
-      buildBadge.textContent = "GAME v21 / SERVER v21 • " + (m.map === "roundabout" ? "ROUNDABOUT" : "STADIUM");
+      buildBadge.textContent = "GAME v22 / SERVER v22 • " + (m.map === "roundabout" ? "ROUNDABOUT" : "STADIUM");
       applyMap(m.map || "football");
       net.id = m.id;
       net.code = m.code;
@@ -3313,32 +3313,33 @@ function landLineClear(a, b) {
 // Shared deterministic orb movement: slow floating spheres bounce off solid surfaces.
 // Small movement steps prevent fast projectiles tunneling through thin walls.
 function stepCleetusOrb(o, dt, boxes, limits, entities = []) {
+  if (o.detonate) return false;
   o.life -= dt;
   const steps = Math.max(1, Math.ceil(dt / 0.008));
   for (let n = 0; n < steps; n++) {
-    const nearby = entities.some(p => Math.hypot(o.x-p.x,o.y-(p.y+0.45),o.z-p.z) < 3.5);
-    const speed = o.kind === 'burst' ? 18 : (o.bounces > 0 || nearby ? 4 : 32);
+    const nearby = entities.some(p => Math.hypot(o.x-p.x,o.y-(p.y+0.45),o.z-p.z) < 4.5);
+    const speed = o.kind === 'burst' ? 48 : (o.bounces > 0 || nearby ? 4 : 32);
     const length = Math.hypot(o.vx,o.vy,o.vz) || 1;
     o.vx=o.vx/length*speed; o.vy=o.vy/length*speed; o.vz=o.vz/length*speed;
     for (const axis of ['x','y','z']) {
       const velocity='v'+axis, old=o[axis];
       if (!o[velocity]) continue;
       o[axis]+=o[velocity]*dt/steps;
-      const r=o.kind==='burst' ? .5 : .24;
+      const r=o.kind==='burst' ? .85 : .55;
       const blocked=o.y<r || o.y>28 || Math.abs(o.x)>limits.limitX || Math.abs(o.z)>limits.limitZ || boxes.some(b=>
         o.x>b.minX-r && o.x<b.maxX+r && o.z>b.minZ-r && o.z<b.maxZ+r && o.y>b.y0-r && o.y<b.h+r);
       if (blocked) {o[axis]=old;o[velocity]*=-1;o.bounces++; if(o.kind==='burst') return false;}
     }
-    if(o.kind==='burst' && entities.some(p=>Math.hypot(o.x-p.x,o.y-(p.y+.45),o.z-p.z)<1.5)) return false;
+    if(o.kind==='burst' && entities.some(p=>Math.hypot(o.x-p.x,o.y-(p.y+.45),o.z-p.z)<2.2)) return false;
   }
-  return o.life>0 && o.bounces<=10;
+  return o.life>0;
 }
 
 // Cleetus is a form of Land, not a teacher switch: no teleport, refill, or cooldown reset.
 let cleetusMode = false, lastCleetusShot = -Infinity;
 const cleetusOrbs = new Map();
 let localOrbSequence = 0;
-const orbGeometry = new THREE.SphereGeometry(0.24, 16, 12);
+const orbGeometry = new THREE.SphereGeometry(0.55, 20, 16);
 const orbMaterial = new THREE.MeshBasicMaterial({color:0xff2858});
 const orbHaloMaterial = new THREE.MeshBasicMaterial({color:0xdc143c,transparent:true,opacity:0.18,depthWrite:false});
 const cleetusVignette = document.createElement('div');
@@ -3347,10 +3348,19 @@ const cleetusLabel = document.createElement('div');
 cleetusLabel.textContent = 'CLEETUS MODE';
 cleetusLabel.style.cssText = 'position:fixed;top:calc(50% + 30px);left:50%;transform:translateX(-50%);color:#dc143c;font:900 16px sans-serif;letter-spacing:2px;text-shadow:0 1px 3px #000,0 0 8px #000;z-index:5;pointer-events:none;display:none;';
 document.body.append(cleetusVignette,cleetusLabel);
+const cleetusDetonateHint = document.createElement('div');
+cleetusDetonateHint.textContent = 'PRESS RIGHT CLICK TO MAKE IT EXPLODE';
+cleetusDetonateHint.style.cssText = 'position:fixed;top:calc(50% + 56px);left:50%;transform:translateX(-50%);color:#ff718c;font:bold 13px sans-serif;letter-spacing:1px;text-shadow:0 1px 4px #000;z-index:5;pointer-events:none;display:none;text-align:center;';
+document.body.appendChild(cleetusDetonateHint);
+function pendingCleetusBurst() {
+  const owner=mode==='online' ? net?.id : 'local';
+  return [...cleetusOrbs.values()].find(o=>o.kind==='burst' && o.owner===owner);
+}
 function updateCleetusOverlay() {
   const active = cleetusMode && current.kind === 'land' && playing && !dead && !paused;
   cleetusVignette.style.opacity = active ? '1' : '0';
   cleetusLabel.style.display = active ? 'block' : 'none';
+  cleetusDetonateHint.style.display = active && pendingCleetusBurst() ? 'block' : 'none';
 }
 function clearCleetusOrbs(owner) {
   if (owner === undefined) clearCleetusFields();
@@ -3365,7 +3375,7 @@ function setCleetusMode(active) {
     playAbilitySound("transform");
     stopLandBeam(); mouseHeld = false;
 
-    loadBodyPicture(active ? 'Cleetus.png' : current.picture);
+    loadBodyPicture(active ? 'cleetus.png' : current.picture);
     abKind = ''; // rebuild the primary icon text for this form
   }
   updateCleetusOverlay();
@@ -3377,7 +3387,7 @@ function toggleCleetus() {
 }
 function makeCleetusOrb(o) {
   const mesh = new THREE.Mesh(orbGeometry,orbMaterial);
-  if(o.kind==='burst') mesh.scale.setScalar(2.5);
+  if(o.kind==='burst') mesh.scale.setScalar(1.55);
   const halo = new THREE.Mesh(orbGeometry,orbHaloMaterial); halo.scale.setScalar(2.3); mesh.add(halo);
   mesh.position.set(o.x,o.y,o.z); scene.add(mesh);
   return {...o,mesh};
@@ -3402,7 +3412,7 @@ function fireCleetusOrbLocal() {
   if (mode === 'online') netSend({t:'cleetusfire',dx:dir.x,dy:dir.y,dz:dir.z});
   else {
     const id = ++localOrbSequence;
-    cleetusOrbs.set(id,makeCleetusOrb({id,owner:'local',x:eye.x,y:eye.y,z:eye.z,vx:dir.x*6,vy:dir.y*6,vz:dir.z*6,life:4,bounces:0}));
+    cleetusOrbs.set(id,makeCleetusOrb({id,owner:'local',x:eye.x,y:eye.y,z:eye.z,vx:dir.x*6,vy:dir.y*6,vz:dir.z*6,life:30,bounces:0}));
   }
   playAbilitySound('orb');
 }
@@ -3426,8 +3436,8 @@ function updateCleetusOrbsLocal(dt) {
   for (const bot of bots) {
     if (!bot.alive) continue;
     const center={x:bot.mesh.position.x,y:bot.mesh.position.y+0.45,z:bot.mesh.position.z};
-    if (![...cleetusOrbs.values()].some(o=>o.kind!=='burst'&&Math.hypot(o.x-center.x,o.y-center.y,o.z-center.z)<=2.5 && landLineClear(o,center))) continue;
-    const dealt=Math.min(bot.health,7*dt);
+    if (![...cleetusOrbs.values()].some(o=>o.kind!=='burst'&&Math.hypot(o.x-center.x,o.y-center.y,o.z-center.z)<=3.5 && landLineClear(o,center))) continue;
+    const dealt=Math.min(bot.health,10*dt);
     damageBot(bot,dealt,'cleetusorb','player'); healed+=dealt;
   }
   if (healed>0) {playerHealth=Math.min(maxHealth,playerHealth+healed);updateHealthBar();}
@@ -3455,12 +3465,19 @@ function syncCleetusFields(fields) {
 }
 function fireCleetusBurst() {
   const now=performance.now();
-  if(!cleetusMode || now-lastCleetusBurst<10000) return;
+  if(!cleetusMode) return;
+  const pending=pendingCleetusBurst();
+  if(pending) {
+    if(mode==='online')netSend({t:'cleetusburst'});
+    else pending.detonate=true;
+    return;
+  }
+  if(now-lastCleetusBurst<10000) return;
   lastCleetusBurst=now;
   const eye=player.position.clone();eye.y+=.45;
   const dir=aimDirection(eye);
   if(mode==='online')netSend({t:'cleetusburst',dx:dir.x,dy:dir.y,dz:dir.z});
-  else {const id=++localOrbSequence;cleetusOrbs.set(id,makeCleetusOrb({id,owner:'local',kind:'burst',x:eye.x,y:eye.y,z:eye.z,vx:dir.x*18,vy:dir.y*18,vz:dir.z*18,life:1.2,bounces:0}));}
+  else {const id=++localOrbSequence;cleetusOrbs.set(id,makeCleetusOrb({id,owner:'local',kind:'burst',x:eye.x,y:eye.y,z:eye.z,vx:dir.x*18,vy:dir.y*18,vz:dir.z*18,life:30,bounces:0}));}
   playAbilitySound('burst');
 }
 function updateCleetusFields(dt,now) {
@@ -3547,21 +3564,30 @@ let lastLandBlast = -Infinity;
 let landStunUntil = 0;
 const landStunPos = new THREE.Vector3();
 const landBlastEffects = [];
+const landDiamondGeometry = new THREE.OctahedronGeometry(.58,0);
+const landDiamondMaterial = new THREE.MeshBasicMaterial({color:0x80f5ff});
+const landDiamondEdgeMaterial = new THREE.MeshBasicMaterial({color:0xffffff,wireframe:true,transparent:true,opacity:.85});
 function spawnLandBlastFx(origin, end) {
-  const mesh = new THREE.Sprite(landPhoneMaterial);
-  mesh.scale.set(0.9 * phoneAspect, 0.9, 1);
-  mesh.position.copy(origin);
-  scene.add(mesh);
-  landBlastEffects.push({ mesh, origin, end, start: performance.now() });
+  const mesh = new THREE.Group();
+  const diamond=new THREE.Mesh(landDiamondGeometry,landDiamondMaterial);
+  diamond.scale.set(1,1.65,1);mesh.add(diamond);
+  const edges=new THREE.Mesh(landDiamondGeometry,landDiamondEdgeMaterial);
+  edges.scale.set(1.18,1.9,1.18);mesh.add(edges);
+  const phone=new THREE.Sprite(landPhoneMaterial);phone.scale.set(.5*phoneAspect,.5,1);mesh.add(phone);
+  // World-space geometry makes the same bright diamond visible from either camera.
+  mesh.position.copy(origin);scene.add(mesh);
+  landBlastEffects.push({mesh,origin,end,start:performance.now()});
 }
 function updateLandBlastFx(now) {
-  for (let i = landBlastEffects.length - 1; i >= 0; i--) {
-    const fx = landBlastEffects[i];
-    const t = Math.min(1, (now - fx.start) / 180);
-    fx.mesh.position.lerpVectors(fx.origin, fx.end, t);
-    if (t === 1) { scene.remove(fx.mesh); landBlastEffects.splice(i, 1); }
+  for(let i=landBlastEffects.length-1;i>=0;i--){
+    const fx=landBlastEffects[i],t=Math.min(1,(now-fx.start)/280);
+    fx.mesh.position.lerpVectors(fx.origin,fx.end,t);
+    fx.mesh.rotation.y=t*Math.PI*3;
+    fx.mesh.scale.setScalar(.8+Math.sin(t*Math.PI)*.35);
+    if(t===1){scene.remove(fx.mesh);landBlastEffects.splice(i,1);}
   }
 }
+
 function fireLandBlast() {
   const now = performance.now();
   if (current.kind !== "land" || !playing || dead || paused || now < landStunUntil ||
@@ -3635,6 +3661,38 @@ function updateLandBeam(dt, now) {
       if (!r.landBeam) r.landBeam = makeLandBeam();
       drawLandBeam(r.landBeam, r.mesh.position, target.mesh.position, now);
     } else if (r.landBeam) r.landBeam.visible = false;
+  }
+}
+
+const beamTargetGlows = new Map();
+const beamGlowGeometry = new THREE.SphereGeometry(1,16,12);
+const beamGlowRingGeometry = new THREE.TorusGeometry(1,.035,6,48);
+function updateBeamTargetGlows(now) {
+  const targets = new Set();
+  if(playing && landBeam.visible && landTarget?.alive)targets.add(landTarget.mesh);
+  if(playing)for(const r of remotes.values()) {
+    if(!r.landBeam?.visible || !r.alive)continue;
+    const target=r.landTarget===net?.id ? (!dead?player:null) : remotes.get(r.landTarget)?.mesh;
+    if(target)targets.add(target);
+  }
+  for(const [target,glow] of beamTargetGlows)if(!targets.has(target)){
+    scene.remove(glow);glow.children.forEach(c=>c.material.dispose());beamTargetGlows.delete(target);
+  }
+  for(const target of targets) {
+    let glow=beamTargetGlows.get(target);
+    if(!glow){
+      glow=new THREE.Group();
+      const shell=new THREE.Mesh(beamGlowGeometry,new THREE.MeshBasicMaterial({transparent:true,opacity:.18,wireframe:true,depthWrite:false,blending:THREE.AdditiveBlending}));
+      shell.scale.set(.85,1.3,.85);glow.add(shell);
+      for(let i=0;i<3;i++){
+        const ring=new THREE.Mesh(beamGlowRingGeometry,new THREE.MeshBasicMaterial({transparent:true,opacity:.75,depthWrite:false,blending:THREE.AdditiveBlending}));
+        ring.rotation.set(i===0?Math.PI/2:0,i===2?Math.PI/2:0,0);glow.add(ring);
+      }
+      scene.add(glow);beamTargetGlows.set(target,glow);
+    }
+    glow.position.copy(target.position);glow.position.y+=.2;
+    glow.children.forEach((child,i)=>child.material.color.setHSL((now/1000+i/4)%1,1,.6));
+    glow.scale.setScalar(1+.045*Math.sin(now/70));
   }
 }
 
@@ -5041,7 +5099,7 @@ const ICON = {
   mine: '<circle cx="12" cy="13" r="4.5"/><path d="M12 3v3M12 20v3M3 13h3M18 13h3M6 7l2 2M16 17l2 2M18 7l-2 2M8 17l-2 2"/>',
   hive: '<ellipse cx="12" cy="7" rx="4" ry="2.5"/><ellipse cx="12" cy="12" rx="6" ry="3"/><ellipse cx="12" cy="17.5" rx="5" ry="3"/>',
   bee: '<ellipse cx="12" cy="14" rx="5" ry="6"/><path d="M7 6c-3-3-5 2-2 4M17 6c3-3 5 2 2 4M9 11h6M9 15h6"/>',
-  honey: '<path d="M12 3l7 9-7 9-7-9z"/><path d="M12 3v21"/>',
+  honey: '<path d="M12 3l7 9-7 9-7-9z"/><path d="M12 3v22"/>',
   sun: '<circle cx="12" cy="12" r="5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
   camera: '<path d="M3 8h4l2-3h6l2 3h4v11H3z"/><circle cx="12" cy="13" r="3.5"/>',
   wheel: '<rect x="7" y="2" width="10" height="20" rx="5"/><path d="M12 6v4"/>',
@@ -5053,8 +5111,8 @@ function abilityDefs() {
     return {
       accent: "#65c9ff",
       tiles: [
-        { key: "LEFT CLICK", name: cleetusMode ? "Life Orbs" : "Phone Beam", icon: ICON.phones, badge: () => cleetusMode ? "7 DPS + HEAL" : "20m" },
-        { key: "RIGHT CLICK", name: cleetusMode ? "Stun Orb" : "Phone Blast", icon: ICON.phones, cd: () => cleetusMode ? [lastCleetusBurst, 10000] : [lastLandBlast, current.blastCooldown], badge: () => cleetusMode ? "5m / 20 DPS" : "52" },
+        { key: "LEFT CLICK", name: cleetusMode ? "Life Orbs" : "Phone Beam", icon: ICON.phones, badge: () => cleetusMode ? "10 DPS + HEAL" : "20m" },
+        { key: "RIGHT CLICK", name: cleetusMode ? "Stun Orb" : "Phone Blast", icon: ICON.phones, cd: () => cleetusMode ? [pendingCleetusBurst() ? -Infinity : lastCleetusBurst, 10000] : [lastLandBlast, current.blastCooldown], badge: () => cleetusMode ? (pendingCleetusBurst() ? "DETONATE" : "5m / 20 DPS") : "52" },
         { key: "SHIFT", name: "Desk Sprint", icon: ICON.dash, badge: () => landSprinting ? "SPRINTING" : "1.5×" },
       ],
       ultIcon: ICON.sun,
@@ -5427,6 +5485,7 @@ function animate() {
     shieldUp = false;
   }
   updateLandBeam(dt, now);
+  updateBeamTargetGlows(now);
   updateLandBlastFx(now);
   if (now >= landStunUntil) checkPads(now);
   constrainPlayer();
