@@ -471,17 +471,20 @@ function stadiumSign(lines, width, height, x, y, z, rotation = 0, background = "
 }
 stadiumSign(["COUGAR CONCESSIONS", "CANYON HIGH SCHOOL • COMAL ISD"], 13, 0.8, 54, 3.57, -44.98);
 stadiumSign(["GAME DAY MENU", "HOT DOGS • NACHOS", "POPCORN • COLD DRINKS"], 4, 2.1, 54, 2.3, -52.55, 0, "#202126");
-const fieldBillboard = stadiumSign(["CANYON COUGARS", "COMAL ISD", "DEFEND THE DEN"], 16, 4.4, 0, 8, -83.58, 0, "#a70f26");
-texLoader.load("1118.png", texture => {
+const fieldBillboard = stadiumSign(["CANYON COUGARS", "COMAL ISD", "DEFEND THE DEN"], 16, 4.4, 0, 8, -83.52, 0, "#a70f26");
+const fieldBillboardBack = stadiumSign(["COUGAR STADIUM", "CANYON HIGH SCHOOL"], 16, 4.4, 0, 8, -84.48, Math.PI);
+texLoader.load(new URL("./1118.png?v=e9cee7e52fe7", import.meta.url).href, texture => {
   texture.colorSpace = THREE.SRGBColorSpace;
-  const previousTexture = fieldBillboard.material.map;
-  fieldBillboard.material.map = texture;
-  fieldBillboard.material.needsUpdate = true;
-  if (previousTexture) previousTexture.dispose();
+  for (const face of [fieldBillboard, fieldBillboardBack]) {
+    const previousTexture = face.material.map;
+    face.material.map = texture;
+    face.material.side = THREE.DoubleSide;
+    face.material.needsUpdate = true;
+    if (previousTexture && previousTexture !== texture) previousTexture.dispose();
+  }
 }, undefined, () => {
   console.warn("Could not load 1118.png for the football-field billboard.");
 });
-stadiumSign(["COUGAR STADIUM", "CANYON HIGH SCHOOL"], 16, 4.4, 0, 8, -84.42, Math.PI);
 for (const side of [-1, 1]) {
   for (const z of [-34, 34]) {
     stadiumSign(["CANYON", "COUGARS"], 2.4, 3, side * 46, 4.4, z + 0.12);
@@ -765,7 +768,7 @@ const characters = {
   mahoney: {
     name: "Mr. Mahoney",
     color: 0x8e44ad,
-    picture: "mahoney.png", // optional cutout photo of him
+    picture: new URL("./mahoney.png?v=c72f20f42ab9", import.meta.url).href, // optional cutout photo of him
     health: 275,
     speed: 0.15,
     // Weapon: phone burst
@@ -1969,13 +1972,24 @@ for (const key in characters) {
   holder.appendChild(fallback);
   if (c.picture) {
     const pic = document.createElement("img");
-    pic.style.cssText = "max-height:225px;max-width:100%;display:none;filter:drop-shadow(0 6px 10px rgba(0,0,0,0.6));";
-    pic.onload = () => {
+    pic.alt = c.name;
+    pic.loading = "eager";
+    pic.style.cssText = "height:225px;width:100%;object-fit:contain;object-position:center bottom;display:none;flex-shrink:0;filter:drop-shadow(0 6px 10px rgba(0,0,0,0.6));";
+    const showPicture = () => {
+      if (!pic.naturalWidth) return;
       pic.style.display = "block";
       fallback.style.display = "none";
     };
-    pic.src = c.picture;
+    pic.onload = showPicture;
+    pic.onerror = () => {
+      pic.style.display = "none";
+      fallback.style.display = "block";
+      console.warn("Teacher image failed to load:", c.picture);
+    };
     holder.appendChild(pic);
+    pic.src = c.picture;
+    if (pic.complete) showPicture();
+    else if (pic.decode) pic.decode().then(showPicture).catch(() => {});
   }
   card.appendChild(holder);
 
