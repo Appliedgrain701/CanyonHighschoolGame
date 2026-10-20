@@ -2,7 +2,7 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const SERVER_VERSION = 21; // protocol version; differing versions do not imply a stale deployment
+const SERVER_VERSION = 22; // protocol version; differing versions do not imply a stale deployment
 // Shared arena dimensions: keep game.js and server.js in sync.
 const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
 // Shared procedural Roundabout geometry. X=east, Z=south; north is -Z.
@@ -89,7 +89,7 @@ const CHARS = { mahoney: { health: 275 }, applebee: { health: 200 }, land: { hea
 // The SERVER decides damage, so players can't edit their own numbers
 const RULES = {
   cleetusfield: { dmg: 20, range: 1000 },
-  cleetusorb: { dmg: 7, range: 1000 }, // internal server orb ticks only
+  cleetusorb: { dmg: 10, range: 1000 }, // internal server orb ticks only
   landbeam: { dmg: 38, range: 20 }, // damage per second; server-timed channel only
   landblast: { dmg: 52, range: 20 },
   phone: { dmg: 10, range: 95 },
@@ -767,31 +767,35 @@ function updateLandChannel(p, now) {
 // Shared deterministic orb movement: slow floating spheres bounce off solid surfaces.
 // Small movement steps prevent fast projectiles tunneling through thin walls.
 function stepCleetusOrb(o, dt, boxes, limits, entities = []) {
+  if (o.detonate) return false;
   o.life -= dt;
   const steps = Math.max(1, Math.ceil(dt / 0.008));
   for (let n = 0; n < steps; n++) {
-    const nearby = entities.some(p => Math.hypot(o.x-p.x,o.y-(p.y+0.45),o.z-p.z) < 3.5);
-    const speed = o.kind === 'burst' ? 18 : (o.bounces > 0 || nearby ? 4 : 32);
+    const nearby = entities.some(p => Math.hypot(o.x-p.x,o.y-(p.y+0.45),o.z-p.z) < 4.5);
+    const speed = o.kind === 'burst' ? 48 : (o.bounces > 0 || nearby ? 4 : 32);
     const length = Math.hypot(o.vx,o.vy,o.vz) || 1;
     o.vx=o.vx/length*speed; o.vy=o.vy/length*speed; o.vz=o.vz/length*speed;
     for (const axis of ['x','y','z']) {
       const velocity='v'+axis, old=o[axis];
       if (!o[velocity]) continue;
       o[axis]+=o[velocity]*dt/steps;
-      const r=o.kind==='burst' ? .5 : .24;
+      const r=o.kind==='burst' ? .85 : .55;
       const blocked=o.y<r || o.y>28 || Math.abs(o.x)>limits.limitX || Math.abs(o.z)>limits.limitZ || boxes.some(b=>
         o.x>b.minX-r && o.x<b.maxX+r && o.z>b.minZ-r && o.z<b.maxZ+r && o.y>b.y0-r && o.y<b.h+r);
       if (blocked) {o[axis]=old;o[velocity]*=-1;o.bounces++; if(o.kind==='burst') return false;}
     }
-    if(o.kind==='burst' && entities.some(p=>Math.hypot(o.x-p.x,o.y-(p.y+.45),o.z-p.z)<1.5)) return false;
+    if(o.kind==='burst' && entities.some(p=>Math.hypot(o.x-p.x,o.y-(p.y+.45),o.z-p.z)<2.2)) return false;
   }
-  return o.life>0 && o.bounces<=10;
+  return o.life>0;
 }
 
 let orbSequence = 0;
 function fireCleetusOrb(p, m) {
   const now = Date.now();
   const burst = m.t === "cleetusburst";
+  if (p.char !== "land" || !p.cleetus) return;
+  const pending = burst && (p.orbs || []).find(o => o.kind === "burst");
+  if (pending) { pending.detonate = true; return; }
   const clock = burst ? "lastBurstAt" : "lastOrbAt";
   if (p.char !== "land" || !p.cleetus || now - (p[clock] ?? -Infinity) < (burst ? 10000 : 700)) return;
   if (![m.dx,m.dy,m.dz].every(Number.isFinite)) return;
@@ -799,7 +803,7 @@ function fireCleetusOrb(p, m) {
   if (length < 0.9 || length > 1.1) return;
   p[clock] = now;
   const o = {id:++orbSequence, owner:p.id, kind:burst ? "burst" : "life", x:p.x, y:p.y+0.45, z:p.z,
-    vx:m.dx/length*6, vy:m.dy/length*6, vz:m.dz/length*6, life:burst ? 1.2 : 4, bounces:0};
+    vx:m.dx/length*6, vy:m.dy/length*6, vz:m.dz/length*6, life:30, bounces:0};
   p.orbs = p.orbs || []; p.orbs.push(o);
 }
 function updateCleetusOrbs(p, now) {
@@ -817,7 +821,7 @@ function updateCleetusOrbs(p, now) {
   let healed=0;
   for(const target of targets) {
     const center={x:target.x,y:target.y+.45,z:target.z};
-    if(p.orbs.some(o=>o.kind!=='burst'&&Math.hypot(o.x-center.x,o.y-center.y,o.z-center.z)<=2.5&&landLineClear(o,center,map.wallBoxes)))
+    if(p.orbs.some(o=>o.kind!=='burst'&&Math.hypot(o.x-center.x,o.y-center.y,o.z-center.z)<=3.5&&landLineClear(o,center,map.wallBoxes)))
       healed+=hit(p,{k:'cleetusorb',target:target.id},dt,false,true)||0;
     for(const f of p.fields) {
       if(Math.hypot(f.x-center.x,f.y-center.y,f.z-center.z)>5 || !landLineClear(f,center,map.wallBoxes)) continue;
