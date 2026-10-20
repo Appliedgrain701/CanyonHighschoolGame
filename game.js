@@ -1,12 +1,12 @@
 import * as THREE from "three";
 import { SERVER_URL } from "./config.js"; // your Render address lives in config.js
 
-const GAME_BUILD = 22;
+const GAME_BUILD = 23;
 // Shared arena dimensions: keep game.js and server.js in sync.
 const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
 
 const buildBadge = document.createElement("div");
-buildBadge.textContent = "GAME v22 • BOT / OFFLINE";
+buildBadge.textContent = "GAME v23 • BOT / OFFLINE";
 buildBadge.style.cssText = "position:fixed;top:5px;left:8px;z-index:10000;color:#fff;background:#111b;padding:3px 7px;font:11px sans-serif;pointer-events:none";
 document.body.appendChild(buildBadge);
 
@@ -1986,12 +1986,6 @@ for (const key in characters) {
     card.style.borderColor = "#4a5da8";
     card.style.boxShadow = "0 10px 30px rgba(0,0,0,0.45)";
   });
-  if (key === "land") {
-    const status = document.createElement("div");
-    status.textContent = "PHONE BEAM + PHONE BLAST";
-    status.style.cssText = "padding:7px 4px;text-align:center;font-size:10px;font-weight:900;letter-spacing:1.5px;color:#ffcc2f;background:#080d1c;";
-    card.appendChild(status);
-  }
   card.addEventListener("click", () => selectCharacter(key));
 }
 const soonCard = makeCard(true);
@@ -2020,6 +2014,7 @@ function selectCharacter(key) {
     lockPointer();
     return;
   }
+  if(mode === "online") { getAudio(); preloadRoomSound().catch(() => {}); }
   const switching = inMatch;
   if (switching && mode === "bots") creditSwitchKill();
   lastAttacker = null;
@@ -2186,6 +2181,7 @@ chatInput.addEventListener("keydown", (e) => {
   e.stopPropagation();
   if (e.code === "Enter" && !e.isComposing) {
     e.preventDefault();
+    getAudio();
     const message = chatInput.value.trim();
     if (message) netSend({t:"chat", text:message});
     closeChat();
@@ -2462,7 +2458,7 @@ function clearBots() {
 
 function startBotMode() {
   leaveOnline();
-  buildBadge.textContent = "GAME v22 • " + (selectedMap === "roundabout" ? "ROUNDABOUT" : "STADIUM") + " • BOTS";
+  buildBadge.textContent = "GAME v23 • " + (selectedMap === "roundabout" ? "ROUNDABOUT" : "STADIUM") + " • BOTS";
   clearBots();
   for (let i = 0; i < BOT_COUNT; i++) makeBot(i);
   kills = 0;
@@ -2930,6 +2926,7 @@ function updateRemotes(dt, now) {
 }
 
 function leaveOnline() {
+  stopRoomSound();
   setCleetusMode(false); clearCleetusOrbs();
   closeChat(false); chatLog.textContent = ""; chatPanel.style.display = "none";
   const n = net;
@@ -3037,6 +3034,9 @@ function handleNet(m) {
       return;
     }
     case "orbs": syncCleetusOrbs(m.orbs); syncCleetusFields(m.fields || []); return;
+    case "roomsound":
+      playRoomSound(m.sound);
+      return;
     case "chat":
       addChatMessage(m.name, m.text);
       return;
@@ -3045,11 +3045,11 @@ function handleNet(m) {
       return;
     case "welcome": {
       if (m.v !== GAME_BUILD) {
-        buildBadge.textContent = "GAME v22 / SERVER v" + m.v + " — UPDATE BOTH FILES";
-        failOnline("Version mismatch: game v22 needs server v22. Replace both files and restart the server, then refresh the game.");
+        buildBadge.textContent = "GAME v23 / SERVER v" + m.v + " — UPDATE BOTH FILES";
+        failOnline("Version mismatch: game v23 needs server v23. Replace both files and restart the server, then refresh the game.");
         return;
       }
-      buildBadge.textContent = "GAME v22 / SERVER v22 • " + (m.map === "roundabout" ? "ROUNDABOUT" : "STADIUM");
+      buildBadge.textContent = "GAME v23 / SERVER v23 • " + (m.map === "roundabout" ? "ROUNDABOUT" : "STADIUM");
       applyMap(m.map || "football");
       net.id = m.id;
       net.code = m.code;
@@ -4962,6 +4962,45 @@ function playExplosionSound(pos) {
   noise.start(t); noise.stop(t + 0.65);
   tone(100, 28, 0.5, "sine", volume, 0);
 }
+// Fixed asset lookup: commands cannot supply a URL or execute arbitrary code.
+const ROOM_SOUND_URL = new URL('./audio/room-command.mp3', document.baseURI).href;
+let roomSoundBuffer = null, roomSoundLoading = null, roomSoundSource = null;
+let roomSoundGeneration = 0;
+async function preloadRoomSound() {
+  if(roomSoundBuffer)return roomSoundBuffer;
+  if(roomSoundLoading)return roomSoundLoading;
+  const ac=getAudio();
+  if(!ac)throw new Error('Audio unavailable');
+  roomSoundLoading=(async()=>{
+    const response=await fetch(ROOM_SOUND_URL);
+    if(!response.ok)throw new Error('Missing room audio');
+    roomSoundBuffer=await ac.decodeAudioData(await response.arrayBuffer());
+    return roomSoundBuffer;
+  })();
+  try{return await roomSoundLoading;}finally{roomSoundLoading=null;}
+}
+function stopRoomSound() {
+  roomSoundGeneration++;
+  if(roomSoundSource){try{roomSoundSource.stop();}catch(_){}roomSoundSource=null;}
+}
+async function playRoomSound(id) {
+  if(id!=='room-command'||mode!=='online'||!net)return;
+  const connection=net,generation=roomSoundGeneration;
+  try {
+    const buffer=await preloadRoomSound();
+    if(net!==connection||mode!=='online'||generation!==roomSoundGeneration)return;
+    const ac=getAudio();
+    if(!ac||ac.state!=='running'){addChatMessage('System','Click the game to enable audio.');return;}
+    if(roomSoundSource){try{roomSoundSource.stop();}catch(_){}}
+    const source=ac.createBufferSource(),gain=ac.createGain();
+    source.buffer=buffer;
+    gain.gain.value=1; // Full clip volume; does not alter device volume or other audio.
+    source.connect(gain);gain.connect(ac.destination);roomSoundSource=source;
+    source.onended=()=>{source.disconnect();gain.disconnect();if(roomSoundSource===source)roomSoundSource=null;};
+    source.start();
+  }catch(_){if(net===connection)addChatMessage('System','Room audio could not load. Check audio/room-command.mp3.');}
+}
+
 // Short procedural cues: each ability has a distinct pitch/envelope, with distance falloff.
 const abilitySoundTimes = new Map();
 function playAbilitySound(kind, pos, key = '') {
@@ -5099,7 +5138,7 @@ const ICON = {
   mine: '<circle cx="12" cy="13" r="4.5"/><path d="M12 3v3M12 20v3M3 13h3M18 13h3M6 7l2 2M16 17l2 2M18 7l-2 2M8 17l-2 2"/>',
   hive: '<ellipse cx="12" cy="7" rx="4" ry="2.5"/><ellipse cx="12" cy="12" rx="6" ry="3"/><ellipse cx="12" cy="17.5" rx="5" ry="3"/>',
   bee: '<ellipse cx="12" cy="14" rx="5" ry="6"/><path d="M7 6c-3-3-5 2-2 4M17 6c3-3 5 2 2 4M9 11h6M9 15h6"/>',
-  honey: '<path d="M12 3l7 9-7 9-7-9z"/><path d="M12 3v22"/>',
+  honey: '<path d="M12 3l7 9-7 9-7-9z"/><path d="M12 3v23"/>',
   sun: '<circle cx="12" cy="12" r="5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
   camera: '<path d="M3 8h4l2-3h6l2 3h4v11H3z"/><circle cx="12" cy="13" r="3.5"/>',
   wheel: '<rect x="7" y="2" width="10" height="20" rx="5"/><path d="M12 6v4"/>',
