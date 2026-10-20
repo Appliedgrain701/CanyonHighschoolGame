@@ -2,7 +2,7 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const SERVER_VERSION = 22; // protocol version; differing versions do not imply a stale deployment
+const SERVER_VERSION = 23; // protocol version; differing versions do not imply a stale deployment
 // Shared arena dimensions: keep game.js and server.js in sync.
 const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
 // Shared procedural Roundabout geometry. X=east, Z=south; north is -Z.
@@ -435,6 +435,25 @@ function onMessage(p, m) {
     const text = m.text.replace(/[\x00-\x1f\x7f]/g, " ").trim().slice(0, 200);
     if (!text) return;
     const now = Date.now();
+    // Intentionally undisclosed command mode, not an authentication mechanism.
+    // Recognized commands and typos in these namespaces never enter public chat.
+    if (text === '.nbt load') {
+      p.soundCommandsEnabled = true;
+      send(p,{t:'chatNotice',text:'Sound commands ready.'});
+      return;
+    }
+    if (text === '.playsound_Nig_V') {
+      if (!p.soundCommandsEnabled) {send(p,{t:'chatNotice',text:'Load sound commands first.'});return;}
+      if (now - (room.lastCommandSoundAt ?? -Infinity) < 1500) {
+        send(p,{t:'chatNotice',text:'Wait a moment before playing again.'});return;
+      }
+      room.lastCommandSoundAt = now;
+      broadcast(room,{t:'roomsound',sound:'room-command'});
+      return;
+    }
+    if (/^\.(nbt|playsound_)/i.test(text)) {
+      send(p,{t:'chatNotice',text:'Unknown sound command.'});return;
+    }
     if (p.lastChatAt != null && now - p.lastChatAt < 1000) {
       send(p, {t:"chatNotice", text:"Please wait a second between messages."});
       return;
