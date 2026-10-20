@@ -471,7 +471,16 @@ function stadiumSign(lines, width, height, x, y, z, rotation = 0, background = "
 }
 stadiumSign(["COUGAR CONCESSIONS", "CANYON HIGH SCHOOL • COMAL ISD"], 13, 0.8, 54, 3.57, -44.98);
 stadiumSign(["GAME DAY MENU", "HOT DOGS • NACHOS", "POPCORN • COLD DRINKS"], 4, 2.1, 54, 2.3, -52.55, 0, "#202126");
-stadiumSign(["CANYON COUGARS", "COMAL ISD", "DEFEND THE DEN"], 16, 4.4, 0, 8, -83.58, 0, "#a70f26");
+const fieldBillboard = stadiumSign(["CANYON COUGARS", "COMAL ISD", "DEFEND THE DEN"], 16, 4.4, 0, 8, -83.58, 0, "#a70f26");
+texLoader.load("1118.png", texture => {
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const previousTexture = fieldBillboard.material.map;
+  fieldBillboard.material.map = texture;
+  fieldBillboard.material.needsUpdate = true;
+  if (previousTexture) previousTexture.dispose();
+}, undefined, () => {
+  console.warn("Could not load 1118.png for the football-field billboard.");
+});
 stadiumSign(["COUGAR STADIUM", "CANYON HIGH SCHOOL"], 16, 4.4, 0, 8, -84.42, Math.PI);
 for (const side of [-1, 1]) {
   for (const z of [-34, 34]) {
@@ -5883,3 +5892,4 @@ function animate() {
   renderer.render(scene, camera);
 }
 animate();
+
