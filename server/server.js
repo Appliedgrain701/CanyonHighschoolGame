@@ -2,7 +2,7 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const SERVER_VERSION = 24; // protocol version; differing versions do not imply a stale deployment
+const SERVER_VERSION = 25; // protocol version; differing versions do not imply a stale deployment
 // Shared arena dimensions: keep game.js and server.js in sync.
 const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
 // Shared procedural Roundabout geometry. X=east, Z=south; north is -Z.
@@ -124,8 +124,8 @@ const wss = new WebSocketServer({ server });
 
 // ---------- rooms ----------
 const rooms = new Map(); // code -> { code, players: Map(id -> player) }
-function newRoom(code, map = "football") {
-  const room = { code, map, players: new Map() };
+function newRoom(code, map = "football", duel = false, matchmaking = false) {
+  const room = { code, map, duel, matchmaking, players: new Map() };
   rooms.set(code, room);
   return room;
 }
@@ -195,22 +195,32 @@ function join(p, m) {
   if (nameLooksBad(p.name)) p.name = "Player" + p.id;
 
   let room;
-  if (m.create) {
-    room = newRoom(makeCode(), m.map === "roundabout" ? "roundabout" : "football");
+  if (m.matchmake) {
+    const map = m.map === "roundabout" ? "roundabout" : "football";
+    room = [...rooms.values()].find(r => r.matchmaking && r.map === map && r.players.size === 1);
+    if (!room) room = newRoom(makeCode(), map, true, true);
+  } else if (m.create) {
+    room = newRoom(makeCode(), m.map === "roundabout" ? "roundabout" : "football", !!m.duel);
   } else {
     let code = String(m.room || "PUBLIC").toUpperCase().slice(0, 8);
     if (code === "PUBLIC" && m.map === "roundabout") code = "ROUND";
     room = rooms.get(code);
     if (!room) return send(p, { t: "error", msg: "Room not found. Check the code and try again." });
   }
-  if (room.players.size >= MAX_PLAYERS) {
-    return send(p, { t: "error", msg: "That room is full (" + MAX_PLAYERS + " players max)." });
+  const capacity = room.duel ? 2 : MAX_PLAYERS;
+  if (room.players.size >= capacity) {
+    return send(p, { t: "error", msg: "That room is full (" + capacity + " players max)." });
   }
   room.players.set(p.id, p);
   p.room = room;
   const list = [];
   for (const o of room.players.values()) if (o.ready && o !== p) list.push(pub(o));
-  send(p, { t: "welcome", v: SERVER_VERSION, id: p.id, code: room.code, map: room.map, players: list });
+  send(p, { t: "welcome", v: SERVER_VERSION, id: p.id, code: room.code, map: room.map, duel: room.duel, players: list });
+  updateDuelStatus(room);
+}
+
+function updateDuelStatus(room) {
+  if (room.duel) broadcast(room, {t:"duelStatus", count:room.players.size, ready:[...room.players.values()].filter(p=>p.ready).length});
 }
 
 function leave(p) {
@@ -220,6 +230,7 @@ function leave(p) {
   p.room = null;
   room.players.delete(p.id);
   broadcast(room, { t: "left", id: p.id });
+  updateDuelStatus(room);
   if (room.players.size === 0 && room.code !== "PUBLIC" && room.code !== "ROUND") rooms.delete(room.code);
 }
 
@@ -427,6 +438,7 @@ function onMessage(p, m) {
     p.ready = true;
     send(p, { t: "respawn", id: p.id, char: p.char, cleetus: !!p.cleetus, x: p.x, z: p.z, hp: p.hp, max: p.max, bonus: 0 });
     broadcast(room, { t: "joined", p: pub(p) }, p.id);
+    updateDuelStatus(room);
     return;
   }
 
@@ -899,3 +911,4 @@ setInterval(() => {
 }, 30000);
 
 server.listen(PORT, () => console.log("Game server v" + SERVER_VERSION + " running on port " + PORT));
+
