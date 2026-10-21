@@ -1,12 +1,12 @@
 import * as THREE from "three";
 import { SERVER_URL } from "./config.js"; // your Render address lives in config.js
 
-const GAME_BUILD = 23;
+const GAME_BUILD = 24;
 // Shared arena dimensions: keep game.js and server.js in sync.
 const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
 
 const buildBadge = document.createElement("div");
-buildBadge.textContent = "GAME v23 • BOT / OFFLINE";
+buildBadge.textContent = "GAME v24 • BOT / OFFLINE";
 buildBadge.style.cssText = "position:fixed;top:5px;left:8px;z-index:10000;color:#fff;background:#111b;padding:3px 7px;font:11px sans-serif;pointer-events:none";
 document.body.appendChild(buildBadge);
 
@@ -471,17 +471,20 @@ function stadiumSign(lines, width, height, x, y, z, rotation = 0, background = "
 }
 stadiumSign(["COUGAR CONCESSIONS", "CANYON HIGH SCHOOL • COMAL ISD"], 13, 0.8, 54, 3.57, -44.98);
 stadiumSign(["GAME DAY MENU", "HOT DOGS • NACHOS", "POPCORN • COLD DRINKS"], 4, 2.1, 54, 2.3, -52.55, 0, "#202126");
-const fieldBillboard = stadiumSign(["CANYON COUGARS", "COMAL ISD", "DEFEND THE DEN"], 16, 4.4, 0, 8, -83.58, 0, "#a70f26");
-texLoader.load("1118.png", texture => {
+const fieldBillboard = stadiumSign(["CANYON COUGARS", "COMAL ISD", "DEFEND THE DEN"], 16, 4.4, 0, 8, -83.52, 0, "#a70f26");
+const fieldBillboardBack = stadiumSign(["COUGAR STADIUM", "CANYON HIGH SCHOOL"], 16, 4.4, 0, 8, -84.48, Math.PI);
+texLoader.load(new URL("./1118.png?v=e9cee7e52fe7", import.meta.url).href, texture => {
   texture.colorSpace = THREE.SRGBColorSpace;
-  const previousTexture = fieldBillboard.material.map;
-  fieldBillboard.material.map = texture;
-  fieldBillboard.material.needsUpdate = true;
-  if (previousTexture) previousTexture.dispose();
+  for (const face of [fieldBillboard, fieldBillboardBack]) {
+    const previousTexture = face.material.map;
+    face.material.map = texture;
+    face.material.side = THREE.DoubleSide;
+    face.material.needsUpdate = true;
+    if (previousTexture && previousTexture !== texture) previousTexture.dispose();
+  }
 }, undefined, () => {
   console.warn("Could not load 1118.png for the football-field billboard.");
 });
-stadiumSign(["COUGAR STADIUM", "CANYON HIGH SCHOOL"], 16, 4.4, 0, 8, -84.42, Math.PI);
 for (const side of [-1, 1]) {
   for (const z of [-34, 34]) {
     stadiumSign(["CANYON", "COUGARS"], 2.4, 3, side * 46, 4.4, z + 0.12);
@@ -765,7 +768,7 @@ const characters = {
   mahoney: {
     name: "Mr. Mahoney",
     color: 0x8e44ad,
-    picture: "mahoney.png", // optional cutout photo of him
+    picture: new URL("./mahoney.png?v=c72f20f42ab9", import.meta.url).href, // optional cutout photo of him
     health: 275,
     speed: 0.15,
     // Weapon: phone burst
@@ -937,7 +940,7 @@ let myName =
 
 // Asks the browser to capture the mouse (it can refuse right after Esc, so errors are ignored)
 function lockPointer() {
-  if (chatOpen) return;
+  if (chatOpen || scoreboardOpen) return;
   try {
     renderer.domElement.focus({ preventScroll: true });
   } catch (e) {}
@@ -947,7 +950,7 @@ function lockPointer() {
       r.catch(() => {
         // the first attempt can be refused right after a menu click chain; try once more shortly after
         setTimeout(() => {
-          if (playing && !paused && !chatOpen && !document.pointerLockElement) {
+          if (playing && !paused && !chatOpen && !scoreboardOpen && !document.pointerLockElement) {
             try {
               const r2 = renderer.domElement.requestPointerLock();
               if (r2 && r2.catch) r2.catch(() => {});
@@ -1890,6 +1893,7 @@ const leaveBtn = makeMenuBtn("LEAVE GAME", () => goToModes());
 document.body.appendChild(pauseOverlay);
 
 function showPause() {
+  if(scoreboardOpen)closeScoreboard(false);
   if (!playing) return;
   paused = true;
   pausedAt = performance.now();
@@ -1969,13 +1973,24 @@ for (const key in characters) {
   holder.appendChild(fallback);
   if (c.picture) {
     const pic = document.createElement("img");
-    pic.style.cssText = "max-height:225px;max-width:100%;display:none;filter:drop-shadow(0 6px 10px rgba(0,0,0,0.6));";
-    pic.onload = () => {
+    pic.alt = c.name;
+    pic.loading = "eager";
+    pic.style.cssText = "height:225px;width:100%;object-fit:contain;object-position:center bottom;display:none;flex-shrink:0;filter:drop-shadow(0 6px 10px rgba(0,0,0,0.6));";
+    const showPicture = () => {
+      if (!pic.naturalWidth) return;
       pic.style.display = "block";
       fallback.style.display = "none";
     };
-    pic.src = c.picture;
+    pic.onload = showPicture;
+    pic.onerror = () => {
+      pic.style.display = "none";
+      fallback.style.display = "block";
+      console.warn("Teacher image failed to load:", c.picture);
+    };
     holder.appendChild(pic);
+    pic.src = c.picture;
+    if (pic.complete) showPicture();
+    else if (pic.decode) pic.decode().then(showPicture).catch(() => {});
   }
   card.appendChild(holder);
 
@@ -2197,13 +2212,131 @@ chatInput.addEventListener("keydown", (e) => {
   } else if (e.code === "Escape") { e.preventDefault(); closeChat(); }
 });
 chatInput.addEventListener("keyup", e => e.stopPropagation());
+// Tab toggles an interactive scoreboard. Muting affects only this listener.
+let scoreboardOpen = false, scoreboardPlayers = [];
+const mutedPlayers = new Set(), speakingUntil = new Map(), voiceSources = new Map();
+const scoreRows = new Map();
+const scoreboard = document.createElement('div');
+scoreboard.style.cssText='position:fixed;inset:0;z-index:80;display:none;align-items:center;justify-content:center;background:#050913bb;font-family:Arial,sans-serif;color:white;';
+scoreboard.setAttribute('role','dialog');scoreboard.setAttribute('aria-modal','true');scoreboard.setAttribute('aria-label','Scoreboard and player voice controls');
+const scoreCard=document.createElement('div');scoreCard.style.cssText='width:min(640px,92vw);max-height:80vh;overflow:auto;padding:24px;background:#101a31;border:2px solid #ffcc2f;border-radius:16px;box-sizing:border-box;';
+const scoreTitle=document.createElement('h2');scoreTitle.textContent='SCOREBOARD';scoreTitle.style.cssText='margin:0 0 8px;color:#ffcc2f;';
+const scoreHelp=document.createElement('p');scoreHelp.textContent='Most kills first • Mute affects voice chat for you only • Tab / Esc to close';scoreHelp.style.cssText='font-size:12px;color:#b5c8e6;';
+const scoreTable=document.createElement('table');scoreTable.style.cssText='width:100%;border-collapse:collapse;text-align:left;';
+const scoreHead=document.createElement('thead');const header=document.createElement('tr');
+for(const title of ['#','Player','Kills','Deaths','Voice']){const th=document.createElement('th');th.textContent=title;th.style.cssText='padding:10px 5px;border-bottom:1px solid #52617d;';header.appendChild(th);}scoreHead.appendChild(header);
+const scoreBody=document.createElement('tbody');scoreTable.append(scoreHead,scoreBody);
+const scoreClose=document.createElement('button');scoreClose.textContent='Close';scoreClose.style.cssText='margin-top:18px;padding:9px 18px;border:0;border-radius:6px;background:#ffcc2f;color:#101a31;font-weight:bold;cursor:pointer;';
+scoreClose.addEventListener('click',()=>closeScoreboard());scoreCard.append(scoreTitle,scoreHelp,scoreTable,scoreClose);scoreboard.appendChild(scoreCard);document.body.appendChild(scoreboard);
+function rankedPlayers(players) {
+  return [...players].sort((a,b)=>(b.kills||0)-(a.kills||0)||(a.deaths||0)-(b.deaths||0)||String(a.name).localeCompare(String(b.name))||String(a.id).localeCompare(String(b.id)));
+}
+function scoreboardRoster() {
+  if(mode==='online')return scoreboardPlayers.length?scoreboardPlayers:[{id:net?.id,name:myName,kills,deaths},...[...remotes.values()].map(r=>({id:r.id,name:r.name,kills:r.kills||0,deaths:r.deaths||0}))];
+  return [{id:'self',name:myName,kills,deaths},...bots.map((b,i)=>({id:'bot'+i,name:b.name,kills:b.kills||0,deaths:b.deaths||0,bot:true}))];
+}
+function stopPlayerVoice(id) {
+  for(const source of voiceSources.get(id)||[]){try{source.stop();source.disconnect();}catch(_){}}
+  voiceSources.delete(id);voiceNextTime.delete(id);
+}
+function togglePlayerMute(id) {
+  if(mutedPlayers.has(id))mutedPlayers.delete(id);
+  else {mutedPlayers.add(id);stopPlayerVoice(id);}
+  renderScoreboard();
+}
+function renderScoreboard() {
+  if(!scoreboardOpen)return;
+  const players=rankedPlayers(scoreboardRoster()),live=new Set(players.map(p=>p.id));
+  for(const [id,row] of scoreRows)if(!live.has(id)){row.tr.remove();scoreRows.delete(id);}
+  players.forEach((p,index)=>{
+    let row=scoreRows.get(p.id);
+    if(!row){
+      const tr=document.createElement('tr'),cells=[];
+      for(let i=0;i<5;i++){const td=document.createElement('td');td.style.cssText='padding:11px 5px;border-bottom:1px solid #26344b;';cells.push(td);tr.appendChild(td);}
+      const button=document.createElement('button');button.style.cssText='padding:7px 10px;background:#243958;color:#fff;border:1px solid #647998;border-radius:6px;cursor:pointer;';
+      button.addEventListener('click',()=>togglePlayerMute(p.id));cells[4].appendChild(button);row={tr,cells,button};scoreRows.set(p.id,row);
+    }
+    const own=p.id===(mode==='online'?net?.id:'self');
+    row.cells[0].textContent=String(index+1);row.cells[1].textContent=p.name+(own?' (you)':'');row.cells[2].textContent=String(p.kills||0);row.cells[3].textContent=String(p.deaths||0);
+    row.tr.style.background=own?'#24344d':'transparent';row.button.disabled=own||!!p.bot;
+    row.button.textContent=own?'You':p.bot?'Bot':mutedPlayers.has(p.id)?'Unmute':'Mute';
+    row.button.setAttribute('aria-label',(mutedPlayers.has(p.id)?'Unmute ':'Mute ')+p.name);
+    row.button.setAttribute('aria-pressed',String(mutedPlayers.has(p.id)));
+    if(scoreBody.children[index]!==row.tr)scoreBody.insertBefore(row.tr,scoreBody.children[index]||null);
+  });
+}
+function openScoreboard() {
+  if(!playing||paused)return;
+  if(chatOpen)closeChat(false);
+  scoreboardOpen=true;mouseHeld=rightHeld=false;
+  for(const key of Object.keys(keys))keys[key]=false;
+  stopVoice();renderScoreboard();scoreboard.style.display='flex';
+  if(document.pointerLockElement)document.exitPointerLock();
+  scoreClose.focus();
+}
+function closeScoreboard(relock=true) {
+  scoreboardOpen=false;scoreboard.style.display='none';justSelectedAt=performance.now();
+  if(relock&&playing&&!paused)lockPointer();
+}
+scoreboard.addEventListener('keydown',e=>{
+  if(e.code==='Tab'||e.code==='Escape'){e.preventDefault();e.stopPropagation();if(!e.repeat)closeScoreboard();}
+  else e.stopPropagation();
+});
+const speakersPanel=document.createElement('div');
+speakersPanel.style.cssText='position:fixed;left:16px;top:105px;width:210px;max-height:35vh;overflow:hidden;z-index:6;pointer-events:none;font:600 13px Arial,sans-serif;color:#fff;background:#081629cc;border-left:3px solid #55f4a4;border-radius:6px;padding:10px;display:none;';
+document.body.appendChild(speakersPanel);
+function markSpeaking(id,samples,scale=1) {
+  if(!samples.length)return;
+  let sum=0;for(let i=0;i<samples.length;i++){const value=samples[i]*scale;sum+=value*value;}
+  if(Math.sqrt(sum/samples.length)>.012)speakingUntil.set(id,performance.now()+400);
+}
+function makeSpeakingLabel(name) {
+  const canvas=document.createElement('canvas');canvas.width=512;canvas.height=80;
+  const g=canvas.getContext('2d');g.fillStyle='#092238dd';g.fillRect(0,0,512,80);
+  g.fillStyle='#55f4a4';g.beginPath();g.moveTo(15,30);g.lineTo(27,30);g.lineTo(40,18);g.lineTo(40,62);g.lineTo(27,50);g.lineTo(15,50);g.closePath();g.fill();
+  g.strokeStyle='#55f4a4';g.lineWidth=4;for(const radius of [12,23]){g.beginPath();g.arc(40,40,radius,-.85,.85);g.stroke();}
+  g.fillStyle='white';g.font='bold 28px Arial';g.textBaseline='middle';g.fillText(String(name).slice(0,24),78,40,420);
+  const texture=new THREE.CanvasTexture(canvas);texture.colorSpace=THREE.SRGBColorSpace;
+  const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:texture,transparent:true,depthWrite:false}));sprite.scale.set(3.8,.6,1);sprite.position.y=2.65;sprite.visible=false;return sprite;
+}
+let selfSpeakingLabel=null,selfSpeakingName='',speakerSignature='',nextScoreRefresh=0;
+function disposeSpeakingLabel(label){if(!label)return;label.parent?.remove(label);label.material.map.dispose();label.material.dispose();}
+function updateSpeakingUI(now) {
+  for(const [id,until] of speakingUntil)if(now>=until)speakingUntil.delete(id);
+  const active=playing&&mode==='online',speakers=[];
+  if(active&&speakingUntil.has(net?.id))speakers.push({id:net.id,name:myName+' (you)'});
+  for(const r of remotes.values()){
+    const talking=active&&speakingUntil.has(r.id);
+    if(talking)speakers.push({id:r.id,name:r.name});
+    if(r.speakingLabel)r.speakingLabel.visible=talking&&r.alive;
+  }
+  if(active&&selfSpeakingName!==myName){disposeSpeakingLabel(selfSpeakingLabel);selfSpeakingLabel=makeSpeakingLabel(myName);player.add(selfSpeakingLabel);selfSpeakingName=myName;}
+  if(selfSpeakingLabel)selfSpeakingLabel.visible=active&&!dead&&!isFirstPerson()&&speakingUntil.has(net?.id);
+  const signature=JSON.stringify(speakers.map(p=>[p.id,p.name,mutedPlayers.has(p.id)]));
+  if(signature!==speakerSignature){
+    speakerSignature=signature;speakersPanel.textContent='';
+    const title=document.createElement('div');title.textContent="WHO'S SPEAKING";title.style.cssText='color:#55f4a4;font-size:10px;letter-spacing:1px;margin-bottom:6px;';speakersPanel.appendChild(title);
+    for(const p of speakers){const item=document.createElement('div');item.textContent=p.name+(mutedPlayers.has(p.id)?' (muted)':'');item.style.padding='4px 0';speakersPanel.appendChild(item);}
+  }
+  speakersPanel.style.display=speakers.length?'block':'none';
+  if(scoreboardOpen&&now>=nextScoreRefresh){renderScoreboard();nextScoreRefresh=now+250;}
+}
+function resetVoiceRoom() {
+  stopVoice();for(const id of voiceSources.keys())stopPlayerVoice(id);
+  voiceNextTime.clear();speakingUntil.clear();mutedPlayers.clear();scoreboardPlayers=[];
+  closeScoreboard(false);speakersPanel.style.display='none';
+}
+addEventListener('blur',()=>{stopVoice();if(scoreboardOpen)closeScoreboard(false);for(const key of Object.keys(keys))keys[key]=false;mouseHeld=rightHeld=false;});
+
 // ================= INPUT =================
 const keys = {};
 addEventListener("keydown", (e) => {
+  if(e.code==='Tab'&&playing&&!paused&&!chatOpen){e.preventDefault();if(!e.repeat){if(scoreboardOpen)closeScoreboard();else openScoreboard();}return;}
+  if(scoreboardOpen){if(e.code==='Escape'){e.preventDefault();closeScoreboard();}return;}
   if (e.code === "Enter" && !e.repeat && playing && mode === "online" && !paused) {
     e.preventDefault(); openChat(); return;
   }
-  if (chatOpen) return;
+  if (chatOpen || scoreboardOpen) return;
   keys[e.code] = true;
   // Esc closes the pause menu (ignored for a moment so the Esc that opened it doesn't close it)
   if (
@@ -2275,7 +2408,7 @@ renderer.domElement.addEventListener("click", () => {
   if (playing && !paused && !chatOpen) { getAudio(); lockPointer(); }
 });
 addEventListener("mousemove", (e) => {
-  if (!chatOpen && document.pointerLockElement && ultPhase !== 1) {
+  if (!chatOpen && !scoreboardOpen && document.pointerLockElement && ultPhase !== 1) {
     yaw -= e.movementX * 0.003;
     pitch -= e.movementY * 0.003;
     pitch = Math.max(-1, Math.min(1, pitch));
@@ -2284,7 +2417,7 @@ addEventListener("mousemove", (e) => {
 
 // Primary attacks are held with the left mouse button.
 addEventListener("mousedown", (e) => {
-  if (chatOpen || !playing || dead || paused || !document.pointerLockElement || performance.now() < landStunUntil || performance.now() < holdUntil) return;
+  if (scoreboardOpen || chatOpen || !playing || dead || paused || !document.pointerLockElement || performance.now() < landStunUntil || performance.now() < holdUntil) return;
   if (current.kind === "applebee" && honeyChoiceUntil > performance.now()) {
     if (e.button === 0) resolveHoney("apple");
     else if (e.button === 2) resolveHoney("bee");
@@ -2323,7 +2456,7 @@ document.addEventListener("pointerlockchange", () => {
     // Skip this for a moment right after picking a teacher, since some browsers
     // fire this same event when the lock request itself just failed or is still
     // settling, which would otherwise bounce you straight into the pause menu.
-    if (playing && !paused && !chatOpen && overlay.style.display === "none" && performance.now() - justSelectedAt > 800) {
+    if (playing && !paused && !chatOpen && !scoreboardOpen && overlay.style.display === "none" && performance.now() - justSelectedAt > 800) {
       showPause();
     }
   }
@@ -2467,7 +2600,7 @@ function clearBots() {
 
 function startBotMode() {
   leaveOnline();
-  buildBadge.textContent = "GAME v23 • " + (selectedMap === "roundabout" ? "ROUNDABOUT" : "STADIUM") + " • BOTS";
+  buildBadge.textContent = "GAME v24 • " + (selectedMap === "roundabout" ? "ROUNDABOUT" : "STADIUM") + " • BOTS";
   clearBots();
   for (let i = 0; i < BOT_COUNT; i++) makeBot(i);
   kills = 0;
@@ -2524,6 +2657,7 @@ function damageBot(bot, amount, how, attacker) {
   bot.flash = 0.08;
   if (bot.health <= 0) {
     bot.health = 0;
+    bot.deaths = (bot.deaths || 0) + 1;
     bot.alive = false;
     bot.mesh.visible = false;
     bot.respawnAt = performance.now() / 1000 + BOT_RESPAWN;
@@ -2697,11 +2831,11 @@ function netFx(k, a) {
 
 // ================= VOICE CHAT (push to talk, the ` key) =================
 const VOICE_RATE = 16000; // low but clear, and light on bandwidth for the free server
-let voiceStream = null, voiceCtx = null, voiceProc = null, voiceSrc = null, voiceOn = false;
+let voiceStream = null, voiceCtx = null, voiceProc = null, voiceSrc = null, voiceOn = false, voiceSilence = null;
 const voiceNextTime = new Map(); // remote player id -> when their next chunk should start playing
 
 async function startVoice() {
-  if (voiceOn || mode !== "online") return;
+  if (voiceOn || mode !== "online" || !net?.ready || scoreboardOpen || chatOpen) return;
   voiceOn = true;
   try {
     voiceStream = await navigator.mediaDevices.getUserMedia({
@@ -2714,10 +2848,10 @@ async function startVoice() {
   }
   if (!voiceOn) { voiceStream.getTracks().forEach((t) => t.stop()); return; } // let go of ` while asking permission
   voiceCtx = getAudio();
-  if (!voiceCtx) { voiceOn = false; return; }
+  if (!voiceCtx) { stopVoice(); return; }
   voiceSrc = voiceCtx.createMediaStreamSource(voiceStream);
   voiceProc = voiceCtx.createScriptProcessor(2048, 1, 1);
-  const silence = voiceCtx.createGain();
+  const silence = voiceSilence = voiceCtx.createGain();
   silence.gain.value = 0; // keeps the processor running without echoing your own mic to your speakers
   voiceSrc.connect(voiceProc);
   voiceProc.connect(silence);
@@ -2725,6 +2859,7 @@ async function startVoice() {
   voiceProc.onaudioprocess = (e) => {
     if (!voiceOn || !net || !net.ws || net.ws.readyState !== 1) return;
     const input = e.inputBuffer.getChannelData(0);
+    markSpeaking(net.id,input);
     const ratio = voiceCtx.sampleRate / VOICE_RATE;
     const outLen = Math.floor(input.length / ratio);
     const pcm = new Int16Array(outLen);
@@ -2739,6 +2874,8 @@ async function startVoice() {
 
 function stopVoice() {
   voiceOn = false;
+  if(net)speakingUntil.delete(net.id);
+  if(voiceSilence){voiceSilence.disconnect();voiceSilence=null;}
   if (voiceProc) { voiceProc.disconnect(); voiceProc.onaudioprocess = null; voiceProc = null; }
   if (voiceSrc) { voiceSrc.disconnect(); voiceSrc = null; }
   if (voiceStream) { voiceStream.getTracks().forEach((t) => t.stop()); voiceStream = null; }
@@ -2747,25 +2884,22 @@ function stopVoice() {
 
 // Someone else's voice chunk arrived - queue it right after their last chunk so playback stays gapless
 function handleVoicePacket(buf) {
-  if (buf.byteLength < 6) return;
-  const view = new DataView(buf);
-  const fromId = view.getUint32(0, true);
-  if (net && fromId === net.id) return; // never play back your own mic
-  const int16 = new Int16Array(buf, 4);
-  const ac = getAudio();
-  if (!ac) return;
-  const float32 = new Float32Array(int16.length);
-  for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 0x8000;
-  const audioBuf = ac.createBuffer(1, float32.length, VOICE_RATE);
-  audioBuf.copyToChannel(float32, 0);
-  const src = ac.createBufferSource();
-  src.buffer = audioBuf;
-  src.connect(ac.destination);
-  const now = ac.currentTime;
-  let startAt = voiceNextTime.get(fromId) || now;
-  if (startAt < now) startAt = now + 0.03; // a small cushion so chunks never try to play in the past
-  src.start(startAt);
-  voiceNextTime.set(fromId, startAt + audioBuf.duration);
+  if(!net||mode!=='online'||buf.byteLength<6||(buf.byteLength-4)%2!==0)return;
+  const fromId=new DataView(buf).getUint32(0,true);
+  if(fromId===net.id||!remotes.has(fromId))return;
+  const int16=new Int16Array(buf,4);
+  markSpeaking(fromId,int16,1/32768);
+  if(mutedPlayers.has(fromId))return;
+  const ac=getAudio();if(!ac||ac.state!=='running')return;
+  const float32=new Float32Array(int16.length);
+  for(let i=0;i<int16.length;i++)float32[i]=int16[i]/32768;
+  const audioBuf=ac.createBuffer(1,float32.length,VOICE_RATE);audioBuf.copyToChannel(float32,0);
+  const src=ac.createBufferSource();src.buffer=audioBuf;src.connect(ac.destination);
+  const now=ac.currentTime;let startAt=Math.max(now+.015,voiceNextTime.get(fromId)||now);
+  if(startAt>now+.35) {stopPlayerVoice(fromId);startAt=now+.03;}
+  let sources=voiceSources.get(fromId);if(!sources){sources=new Set();voiceSources.set(fromId,sources);}sources.add(src);
+  src.onended=()=>{sources.delete(src);src.disconnect();if(!sources.size&&voiceSources.get(fromId)===sources)voiceSources.delete(fromId);};
+  src.start(startAt);voiceNextTime.set(fromId,startAt+audioBuf.duration);
 }
 
 function nameOf(id) {
@@ -2806,6 +2940,7 @@ function addRemote(p) {
   const r = {
     id: p.id,
     name: p.name,
+    kills: p.kills || 0, deaths: p.deaths || 0,
     color,
     mesh,
     hammer,
@@ -2832,6 +2967,7 @@ function addRemote(p) {
     flash: 0,
     swingStart: 0,
   };
+  r.speakingLabel = makeSpeakingLabel(r.name); mesh.add(r.speakingLabel);
   r.appleArms = makeAppleArms(mesh);
   r.cleetus = !!p.cleetus;
   r.balding = !!p.balding;
@@ -2873,9 +3009,12 @@ function setRemoteChar(r, key) {
 }
 
 function removeRemote(id) {
+  stopPlayerVoice(id); speakingUntil.delete(id); mutedPlayers.delete(id);
+  scoreboardPlayers=scoreboardPlayers.filter(p=>p.id!==id);
   const r = remotes.get(id);
   if (!r) return;
   clearCleetusOrbs(id);
+  disposeSpeakingLabel(r.speakingLabel);
   if (r.landBeam) scene.remove(r.landBeam);
   scene.remove(r.mesh);
   scene.remove(r.shieldG);
@@ -2935,6 +3074,7 @@ function updateRemotes(dt, now) {
 }
 
 function leaveOnline() {
+  resetVoiceRoom();
   stopRoomSound();
   setCleetusMode(false); clearCleetusOrbs();
   closeChat(false); chatLog.textContent = ""; chatPanel.style.display = "none";
@@ -2947,6 +3087,7 @@ function leaveOnline() {
     } catch (e) {}
   }
   for (const r of remotes.values()) {
+    disposeSpeakingLabel(r.speakingLabel);
     if (r.landBeam) scene.remove(r.landBeam);
     scene.remove(r.mesh);
     scene.remove(r.shieldG);
@@ -3043,6 +3184,10 @@ function handleNet(m) {
       return;
     }
     case "orbs": syncCleetusOrbs(m.orbs); syncCleetusFields(m.fields || []); return;
+    case 'scoreboard':
+      scoreboardPlayers=m.players;
+      renderScoreboard();
+      return;
     case "roomsound":
       playRoomSound(m.sound);
       return;
@@ -3054,11 +3199,11 @@ function handleNet(m) {
       return;
     case "welcome": {
       if (m.v !== GAME_BUILD) {
-        buildBadge.textContent = "GAME v23 / SERVER v" + m.v + " — UPDATE BOTH FILES";
-        failOnline("Version mismatch: game v23 needs server v23. Replace both files and restart the server, then refresh the game.");
+        buildBadge.textContent = "GAME v24 / SERVER v" + m.v + " — UPDATE BOTH FILES";
+        failOnline("Version mismatch: game v24 needs server v24. Replace both files and restart the server, then refresh the game.");
         return;
       }
-      buildBadge.textContent = "GAME v23 / SERVER v23 • " + (m.map === "roundabout" ? "ROUNDABOUT" : "STADIUM");
+      buildBadge.textContent = "GAME v24 / SERVER v24 • " + (m.map === "roundabout" ? "ROUNDABOUT" : "STADIUM");
       applyMap(m.map || "football");
       net.id = m.id;
       net.code = m.code;
@@ -5147,7 +5292,7 @@ const ICON = {
   mine: '<circle cx="12" cy="13" r="4.5"/><path d="M12 3v3M12 20v3M3 13h3M18 13h3M6 7l2 2M16 17l2 2M18 7l-2 2M8 17l-2 2"/>',
   hive: '<ellipse cx="12" cy="7" rx="4" ry="2.5"/><ellipse cx="12" cy="12" rx="6" ry="3"/><ellipse cx="12" cy="17.5" rx="5" ry="3"/>',
   bee: '<ellipse cx="12" cy="14" rx="5" ry="6"/><path d="M7 6c-3-3-5 2-2 4M17 6c3-3 5 2 2 4M9 11h6M9 15h6"/>',
-  honey: '<path d="M12 3l7 9-7 9-7-9z"/><path d="M12 3v23"/>',
+  honey: '<path d="M12 3l7 9-7 9-7-9z"/><path d="M12 3v24"/>',
   sun: '<circle cx="12" cy="12" r="5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
   camera: '<path d="M3 8h4l2-3h6l2 3h4v11H3z"/><circle cx="12" cy="13" r="3.5"/>',
   wheel: '<rect x="7" y="2" width="10" height="20" rx="5"/><path d="M12 6v4"/>',
@@ -5782,6 +5927,7 @@ function animate() {
   updateCleetusFields(dt, now);
   updateCleetusOverlay();
   updateAbilityBar(now);
+  updateSpeakingUI(now);
   updateSideKeys();
 
   // Ability text
@@ -5892,4 +6038,5 @@ function animate() {
   renderer.render(scene, camera);
 }
 animate();
+
 
