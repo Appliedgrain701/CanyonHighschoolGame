@@ -1,12 +1,12 @@
 import * as THREE from "three";
 import { SERVER_URL } from "./config.js"; // your Render address lives in config.js
 
-const GAME_BUILD = 24;
+const GAME_BUILD = 25;
 // Shared arena dimensions: keep game.js and server.js in sync.
 const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
 
 const buildBadge = document.createElement("div");
-buildBadge.textContent = "GAME v24 • BOT / OFFLINE";
+buildBadge.textContent = "GAME v25 • BOT / OFFLINE";
 buildBadge.style.cssText = "position:fixed;top:5px;left:8px;z-index:10000;color:#fff;background:#111b;padding:3px 7px;font:11px sans-serif;pointer-events:none";
 document.body.appendChild(buildBadge);
 
@@ -1324,7 +1324,9 @@ function updateRoomHud() {
   }
   const where =
     (net.code === "PUBLIC" || net.code === "ROUND") ? "PUBLIC LOBBY" : "ROOM CODE: " + net.code + " (share it with friends)";
-  roomHud.textContent = where + "   |   Players: " + (remotes.size + 1);
+  roomHud.textContent = net.duel
+    ? "1v1 • " + net.code + " | " + (net.duelCount < 2 ? "Finding an opponent… share this code or wait" : net.duelReady < 2 ? "Opponent found — selecting characters" : "Duel active • Tab for scores")
+    : where + "   |   Players: " + (remotes.size + 1);
   roomHud.style.color = "#ffd700";
   roomHud.style.display = "block";
 }
@@ -1837,6 +1839,26 @@ privBack.addEventListener("click", () => {
   mapOverlay.style.display = "flex";
 });
 
+const duelTitle = document.createElement("h2");
+duelTitle.textContent = "1v1 DUELS";
+duelTitle.style.cssText = "margin:0 0 12px;color:#ffcc2f;font-size:23px";
+privateOverlay.appendChild(duelTitle);
+for (const [label, action] of [
+  ["FIND 1v1 — MATCH WITH A PLAYER", () => startOnline({matchmake:true})],
+  ["CREATE 1v1 ROOM — INVITE A FRIEND", () => startOnline({create:true,duel:true})],
+  ["1v1 BOT — RANDOM CHARACTER", () => startBotMode(true)],
+]) {
+  const button = document.createElement("button");
+  button.textContent = label;
+  button.style.cssText = BTN_STYLE + "margin:5px 0;font-size:17px;color:white;";
+  button.addEventListener("click", action);
+  privateOverlay.appendChild(button);
+}
+const duelHelp = document.createElement("div");
+duelHelp.textContent = "Two players only. Respawn and keep dueling; press Tab for scores.";
+duelHelp.style.cssText = "margin:10px 12px 24px;text-align:center;font-size:14px";
+privateOverlay.appendChild(duelHelp);
+privateOverlay.style.overflowY = "auto";
 privateOverlay.appendChild(createBtn);
 privateOverlay.appendChild(orText);
 privateOverlay.appendChild(joinRow);
@@ -2537,8 +2559,14 @@ function drawTag(bot) {
   bot.tagTex.needsUpdate = true;
 }
 
-function makeBot(i) {
-  const color = BOT_COLORS[i % BOT_COLORS.length];
+function randomBotCharacter() {
+  const choices = Object.keys(characters);
+  return choices[Math.floor(Math.random() * choices.length)];
+}
+
+function makeBot(i, char = null) {
+  const character = characters[char];
+  const color = character ? character.color : BOT_COLORS[i % BOT_COLORS.length];
   const mesh = new THREE.Mesh(
     new THREE.BoxGeometry(1, 2, 1),
     new THREE.MeshStandardMaterial({ color })
@@ -2552,7 +2580,8 @@ function makeBot(i) {
   scene.add(mesh);
 
   const bot = {
-    name: BOT_NAMES[i % BOT_NAMES.length],
+    name: character ? character.name + " Bot" : BOT_NAMES[i % BOT_NAMES.length],
+    char, maxHealth: character ? character.health : BOT_HEALTH,
     color,
     mesh,
     tagCanvas: tag.c,
@@ -2574,13 +2603,23 @@ function makeBot(i) {
     flash: 0,
   };
   bots.push(bot);
+  if (character) texLoader.load(character.picture, texture => {
+    if (!bots.includes(bot)) { texture.dispose(); return; }
+    texture.colorSpace = THREE.SRGBColorSpace;
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({map:texture,alphaTest:0.05}));
+    sprite.scale.set(BODY_HEIGHT * texture.image.width / texture.image.height, BODY_HEIGHT, 1);
+    sprite.position.y = BODY_HEIGHT / 2 - 1;
+    mesh.add(sprite); mesh.material.visible = false; head.visible = false;
+  });
+  if (char === "land") bot.beam = makeLandBeam();
   respawnBot(bot);
 }
 
 function respawnBot(bot) {
   const s = pickSpawn();
   bot.mesh.position.set(s[0], 1, s[1]);
-  bot.health = BOT_HEALTH;
+  bot.health = bot.maxHealth || BOT_HEALTH;
+  bot.applesLeft = characters.applebee.apples;
   bot.alive = true;
   bot.mesh.visible = true;
   bot.target = null;
@@ -2592,17 +2631,19 @@ function respawnBot(bot) {
 }
 
 function clearBots() {
-  for (const b of bots) scene.remove(b.mesh);
+  for (const b of bots) { scene.remove(b.mesh); if (b.beam) scene.remove(b.beam); }
   bots.length = 0;
   for (const eb of enemyBullets) scene.remove(eb);
   enemyBullets.length = 0;
 }
 
-function startBotMode() {
+function startBotMode(duel = false) {
   leaveOnline();
-  buildBadge.textContent = "GAME v24 • " + (selectedMap === "roundabout" ? "ROUNDABOUT" : "STADIUM") + " • BOTS";
+  buildBadge.textContent = "GAME v25 • " + (selectedMap === "roundabout" ? "ROUNDABOUT" : "STADIUM") + " • BOTS";
   clearBots();
-  for (let i = 0; i < BOT_COUNT; i++) makeBot(i);
+  for (let i = 0; i < (duel ? 1 : BOT_COUNT); i++) makeBot(i, duel ? randomBotCharacter() : null);
+  if (duel) buildBadge.textContent += " • 1v1 vs " + bots[0].name;
+  privateOverlay.style.display = "none";
   kills = 0;
   deaths = 0;
   inMatch = false;
@@ -2679,6 +2720,21 @@ function damageBot(bot, amount, how, attacker) {
 }
 
 function botShoot(bot, dx, dz) {
+  if (bot.char === "applebee") {
+    const target = bot.target;
+    if (!target || !isAlive(target)) return;
+    bot.applesLeft = (bot.applesLeft ?? characters.applebee.apples) - 1;
+    if (bot.applesLeft <= 0) { bot.applesLeft = characters.applebee.apples; bot.nextBurst = performance.now()/1000 + characters.applebee.reloadMs/1000; }
+    // Same line-of-sight requirement as the bot's aim; a small miss chance keeps it beatable.
+    if (hasLineOfSight(bot.mesh.position, posOf(target)) && Math.random() < 0.7) {
+      if (target === player) damagePlayer(characters.applebee.appleDamage, bot);
+      else damageBot(target, characters.applebee.appleDamage, "apple", bot);
+    }
+    const from = bot.mesh.position.clone(); from.y += 0.5;
+    const to = posOf(target).clone(); to.y += 0.5;
+    spawnAppleFx(from, to); appleContrail(from, to); playAppleWhoosh();
+    return;
+  }
   const e = (Math.random() - 0.5) * 2 * BOT_AIM_ERROR; // bots are not perfect
   const c = Math.cos(e);
   const s = Math.sin(e);
@@ -2686,13 +2742,14 @@ function botShoot(bot, dx, dz) {
   const b = new THREE.Mesh(enemyBulletGeo, bot.bulletMat);
   const p = bot.mesh.position;
   b.position.set(p.x + dir.x * 0.8, 1.5, p.z + dir.z * 0.8);
-  b.userData = { dir, life: 130, owner: bot, damage: BOT_DAMAGE };
+  b.userData = { dir, life: 130, owner: bot, damage: bot.char === "mahoney" ? characters.mahoney.damage : BOT_DAMAGE };
   scene.add(b);
   enemyBullets.push(b);
 }
 
 function updateBots(dt, t) {
   for (const bot of bots) {
+    if (bot.beam) bot.beam.visible = false;
     if (!bot.alive) {
       if (t >= bot.respawnAt) respawnBot(bot);
       continue;
@@ -2798,6 +2855,15 @@ function updateBots(dt, t) {
     pos.z = Math.max(-MAP.limitZ, Math.min(MAP.limitZ, pos.z));
     pushOutOfWalls(pos);
 
+    if (bot.char === "land") {
+      if (bot.canSee && dist <= characters.land.primaryRange) {
+        drawLandBeam(bot.beam, pos, tp, performance.now());
+        const amount = characters.land.primaryDps * dt;
+        if (target === player) damagePlayer(amount, bot);
+        else damageBot(target, amount, "phonebeam", bot);
+      }
+      continue;
+    }
     // shooting: wait a moment after spotting someone, then fire bursts
     if (bot.canSee && dist < BOT_VIEW) {
       bot.seenFor += dt;
@@ -2808,9 +2874,9 @@ function updateBots(dt, t) {
           bot.nextShot = t + BOT_SHOT_GAP;
         }
       } else if (bot.seenFor > BOT_REACTION && t >= bot.nextBurst) {
-        bot.shotsLeft = BOT_SHOTS;
+        bot.shotsLeft = bot.char === "applebee" ? 1 : bot.char === "mahoney" ? characters.mahoney.burst : BOT_SHOTS;
         bot.nextShot = t;
-        bot.nextBurst = t + BOT_BURST_DELAY + Math.random() * 0.8;
+        bot.nextBurst = t + (bot.char ? characters[bot.char].fireDelay / 1000 : BOT_BURST_DELAY + Math.random() * 0.8);
       }
     } else {
       bot.seenFor = 0;
@@ -3197,16 +3263,20 @@ function handleNet(m) {
     case "chatNotice":
       addChatMessage("System", m.text);
       return;
+    case "duelStatus":
+      net.duelCount = m.count; net.duelReady = m.ready; updateRoomHud();
+      return;
     case "welcome": {
       if (m.v !== GAME_BUILD) {
-        buildBadge.textContent = "GAME v24 / SERVER v" + m.v + " — UPDATE BOTH FILES";
-        failOnline("Version mismatch: game v24 needs server v24. Replace both files and restart the server, then refresh the game.");
+        buildBadge.textContent = "GAME v25 / SERVER v" + m.v + " — UPDATE BOTH FILES";
+        failOnline("Version mismatch: game v25 needs server v25. Replace both files and restart the server, then refresh the game.");
         return;
       }
-      buildBadge.textContent = "GAME v24 / SERVER v24 • " + (m.map === "roundabout" ? "ROUNDABOUT" : "STADIUM");
+      buildBadge.textContent = "GAME v25 / SERVER v25 • " + (m.map === "roundabout" ? "ROUNDABOUT" : "STADIUM");
       applyMap(m.map || "football");
       net.id = m.id;
       net.code = m.code;
+      net.duel = !!m.duel; net.duelCount = 1; net.duelReady = 0;
       for (const p of m.players) addRemote(p);
       statusOverlay.style.display = "none";
       inMatch = false;
@@ -3588,6 +3658,7 @@ function updateCleetusOrbsLocal(dt) {
   }
   let healed=0;
   for (const bot of bots) {
+    if (bot.beam) bot.beam.visible = false;
     if (!bot.alive) continue;
     const center={x:bot.mesh.position.x,y:bot.mesh.position.y+0.45,z:bot.mesh.position.z};
     if (![...cleetusOrbs.values()].some(o=>o.kind!=='burst'&&Math.hypot(o.x-center.x,o.y-center.y,o.z-center.z)<=3.5 && landLineClear(o,center))) continue;
@@ -4033,6 +4104,7 @@ function explode(pos, fx) {
   if (fx) return; // another player's grenade: just the picture, they send the damage
 
   for (const bot of bots) {
+    if (bot.beam) bot.beam.visible = false;
     if (!bot.alive) continue;
     const dx = bot.mesh.position.x - pos.x;
     const dz = bot.mesh.position.z - pos.z;
@@ -4066,6 +4138,7 @@ function melee() {
 function meleeStrike() {
   const hv = current.kind === "applebee";
   for (const bot of bots) {
+    if (bot.beam) bot.beam.visible = false;
     if (!bot.alive) continue;
     const dx = bot.mesh.position.x - player.position.x;
     const dz = bot.mesh.position.z - player.position.z;
@@ -4214,6 +4287,7 @@ function fireBeam() {
 
   // damage everything on the line
   for (const bot of bots) {
+    if (bot.beam) bot.beam.visible = false;
     if (!bot.alive) continue;
     const v = new THREE.Vector3().subVectors(bot.mesh.position, eye);
     const t = v.dot(f);
@@ -5292,7 +5366,7 @@ const ICON = {
   mine: '<circle cx="12" cy="13" r="4.5"/><path d="M12 3v3M12 20v3M3 13h3M18 13h3M6 7l2 2M16 17l2 2M18 7l-2 2M8 17l-2 2"/>',
   hive: '<ellipse cx="12" cy="7" rx="4" ry="2.5"/><ellipse cx="12" cy="12" rx="6" ry="3"/><ellipse cx="12" cy="17.5" rx="5" ry="3"/>',
   bee: '<ellipse cx="12" cy="14" rx="5" ry="6"/><path d="M7 6c-3-3-5 2-2 4M17 6c3-3 5 2 2 4M9 11h6M9 15h6"/>',
-  honey: '<path d="M12 3l7 9-7 9-7-9z"/><path d="M12 3v24"/>',
+  honey: '<path d="M12 3l7 9-7 9-7-9z"/><path d="M12 3v25"/>',
   sun: '<circle cx="12" cy="12" r="5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
   camera: '<path d="M3 8h4l2-3h6l2 3h4v11H3z"/><circle cx="12" cy="13" r="3.5"/>',
   wheel: '<rect x="7" y="2" width="10" height="20" rx="5"/><path d="M12 6v4"/>',
