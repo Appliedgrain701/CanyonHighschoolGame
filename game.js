@@ -1639,6 +1639,7 @@ function makeModeCard(title, desc, enabled, onClick, icon) {
 
 // ----- Map select screen (shown after you pick a mode) -----
 let pendingMode = "bots";
+let pendingDuel = false;
 let selectedMap = "football";
 const MODE_NAMES = { bots: "FIGHT BOTS", online: "PLAY ONLINE", private: "PRIVATE ROOM" };
 
@@ -1750,28 +1751,61 @@ mapBack.style.cssText = "margin-top:30px;font-size:16px;cursor:pointer;text-deco
 mapBack.addEventListener("click", () => {
   stopPopulation();
   mapOverlay.style.display = "none";
-  modeOverlay.style.display = "flex";
+  if (pendingMode === "private") modeOverlay.style.display = "flex";
+  else matchTypeOverlay.style.display = "flex";
 });
 mapOverlay.appendChild(mapBack);
 document.body.appendChild(mapOverlay);
 
-// Home -> map screen
+// Home -> match type -> map. Private rooms keep their code/invite options.
+const matchTypeOverlay = document.createElement("div");
+matchTypeOverlay.style.cssText = MENU_STYLE;
+matchTypeOverlay.style.display = "none";
+const matchTypeTitle = document.createElement("h1");
+matchTypeTitle.style.cssText = "margin:0 0 24px;font-size:38px";
+const ffaChoice = document.createElement("button");
+const duelChoice = document.createElement("button");
+for (const button of [ffaChoice, duelChoice]) {
+  button.style.cssText = BTN_STYLE + "color:white;margin:10px;min-width:300px";
+}
+ffaChoice.addEventListener("click", () => { pendingDuel = false; showMapChoice(); });
+duelChoice.addEventListener("click", () => { pendingDuel = true; showMapChoice(); });
+const typeBack = document.createElement("button");
+typeBack.textContent = "< Back";
+typeBack.style.cssText = "margin-top:26px;background:none;border:0;color:white;font-size:16px;cursor:pointer;text-decoration:underline";
+typeBack.addEventListener("click", () => {
+  matchTypeOverlay.style.display = "none";
+  modeOverlay.style.display = "flex";
+});
+matchTypeOverlay.append(matchTypeTitle, ffaChoice, duelChoice, typeBack);
+document.body.appendChild(matchTypeOverlay);
 function chooseMode(kind) {
   if (!commitName()) return;
   pendingMode = kind;
-  mapSub.textContent = MODE_NAMES[kind] + "  |  PLAYING AS " + myName.toUpperCase();
+  pendingDuel = false;
   modeOverlay.style.display = "none";
+  stopPopulation();
+  if (kind === "private") { showMapChoice(); return; }
+  matchTypeTitle.textContent = MODE_NAMES[kind];
+  ffaChoice.textContent = "FREE-FOR-ALL (FFA)";
+  duelChoice.textContent = kind === "bots" ? "1v1 WITH A RANDOM BOT" : "1v1 WITH SOMEONE";
+  matchTypeOverlay.style.display = "flex";
+}
+function showMapChoice() {
+  matchTypeOverlay.style.display = "none";
+  mapSub.textContent = MODE_NAMES[pendingMode] + (pendingMode === "private" ? "" : pendingDuel ? " • 1v1" : " • FREE-FOR-ALL") + " | PLAYING AS " + myName.toUpperCase();
   mapOverlay.style.display = "flex";
-  for (const label of Object.values(populationLabels)) label.style.display = kind === "online" ? "block" : "none";
-  if (kind === "online") startPopulation(); else stopPopulation();
+  const publicFFA = pendingMode === "online" && !pendingDuel;
+  for (const label of Object.values(populationLabels)) label.style.display = publicFFA ? "block" : "none";
+  if (publicFFA) startPopulation(); else stopPopulation();
 }
 // Map screen -> the chosen mode
 function proceedFromMap() {
   stopPopulation();
   applyMap(selectedMap);
   mapOverlay.style.display = "none";
-  if (pendingMode === "bots") startBotMode();
-  else if (pendingMode === "online") startOnline({ room: "PUBLIC" });
+  if (pendingMode === "bots") startBotMode(pendingDuel);
+  else if (pendingMode === "online") startOnline(pendingDuel ? { matchmake: true } : { room: "PUBLIC" });
   else {
     privMsg.textContent = "";
     privateOverlay.style.display = "flex";
@@ -1785,7 +1819,7 @@ privateOverlay.style.display = "none";
 privateOverlay.innerHTML = '<h1 style="margin:0 0 26px;font-size:42px;">PRIVATE ROOM</h1>';
 
 const createBtn = document.createElement("div");
-createBtn.textContent = "CREATE A NEW ROOM";
+createBtn.textContent = "CREATE FREE-FOR-ALL ROOM";
 createBtn.style.cssText = BTN_STYLE;
 createBtn.addEventListener("mouseenter", () => (createBtn.style.background = "#2a3a73"));
 createBtn.addEventListener("mouseleave", () => (createBtn.style.background = "#18213f"));
@@ -1844,9 +1878,7 @@ duelTitle.textContent = "1v1 DUELS";
 duelTitle.style.cssText = "margin:0 0 12px;color:#ffcc2f;font-size:23px";
 privateOverlay.appendChild(duelTitle);
 for (const [label, action] of [
-  ["FIND 1v1 — MATCH WITH A PLAYER", () => startOnline({matchmake:true})],
   ["CREATE 1v1 ROOM — INVITE A FRIEND", () => startOnline({create:true,duel:true})],
-  ["1v1 BOT — RANDOM CHARACTER", () => startBotMode(true)],
 ]) {
   const button = document.createElement("button");
   button.textContent = label;
@@ -2125,6 +2157,8 @@ function goToModes(msg) {
   privateOverlay.style.display = "none";
   mapOverlay.style.display = "none";
   statusOverlay.style.display = "none";
+  matchTypeOverlay.style.display = "none";
+  stopPopulation();
   modeMsg.textContent = msg || "";
   modeOverlay.style.display = "flex";
   document.exitPointerLock();
@@ -2657,14 +2691,14 @@ function startBotMode(duel = false) {
 
 makeModeCard(
   "FIGHT BOTS",
-  BOT_COUNT + " bots roam the field. Everyone fights everyone, bots included.",
+  "Choose Free-for-All against " + BOT_COUNT + " bots or 1v1 against a random teacher.",
   true,
   () => chooseMode("bots"),
   MODE_ICONS.bots
 );
 makeModeCard(
   "PLAY ONLINE",
-  "Everyone who joins fights on one map. Free for all.",
+  "Choose Free-for-All or find someone for a 1v1, then pick your map.",
   true,
   () => chooseMode("online"),
   MODE_ICONS.online
