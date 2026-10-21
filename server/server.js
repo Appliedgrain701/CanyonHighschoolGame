@@ -2,7 +2,7 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const SERVER_VERSION = 25; // protocol version; differing versions do not imply a stale deployment
+const SERVER_VERSION = 26; // protocol version; differing versions do not imply a stale deployment
 // Shared arena dimensions: keep game.js and server.js in sync.
 const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
 // Shared procedural Roundabout geometry. X=east, Z=south; north is -Z.
@@ -165,8 +165,8 @@ function pickSpawn(room) {
   const spawns = room.map === "roundabout" ? roundaboutMap.spawns : SPAWNS;
   let best = spawns[0];
   let bestD = -1;
-  for (let k = 0; k < 6; k++) {
-    const s = spawns[Math.floor(Math.random() * spawns.length)];
+  for (let k = 0; k < (room.duel ? spawns.length : 6); k++) {
+    const s = spawns[room.duel ? k : Math.floor(Math.random() * spawns.length)];
     let nearest = 999;
     for (const o of room.players.values()) {
       if (o.ready && o.alive) nearest = Math.min(nearest, Math.hypot(s[0] - o.x, s[1] - o.z));
@@ -197,7 +197,7 @@ function join(p, m) {
   let room;
   if (m.matchmake) {
     const map = m.map === "roundabout" ? "roundabout" : "football";
-    room = [...rooms.values()].find(r => r.matchmaking && r.map === map && r.players.size === 1);
+    room = [...rooms.values()].find(r => r.matchmaking && r.map === map && r.players.size === 1 && (!r.phase || r.phase === "waiting"));
     if (!room) room = newRoom(makeCode(), map, true, true);
   } else if (m.create) {
     room = newRoom(makeCode(), m.map === "roundabout" ? "roundabout" : "football", !!m.duel);
@@ -207,6 +207,7 @@ function join(p, m) {
     room = rooms.get(code);
     if (!room) return send(p, { t: "error", msg: "Room not found. Check the code and try again." });
   }
+  if (room.duel && room.phase && room.phase !== "waiting") return send(p,{t:"error",msg:"This duel has already started. Find another opponent."});
   const capacity = room.duel ? 2 : MAX_PLAYERS;
   if (room.players.size >= capacity) {
     return send(p, { t: "error", msg: "That room is full (" + capacity + " players max)." });
@@ -217,6 +218,61 @@ function join(p, m) {
   for (const o of room.players.values()) if (o.ready && o !== p) list.push(pub(o));
   send(p, { t: "welcome", v: SERVER_VERSION, id: p.id, code: room.code, map: room.map, duel: room.duel, players: list });
   updateDuelStatus(room);
+}
+
+// Best-of-three duel lifecycle. Combat is authoritative and closed outside active rounds.
+function duelState(room, extra = {}) {
+  broadcast(room, {t:'duelState', phase:room.phase || 'waiting', round:room.round || 1,
+    players:[...room.players.values()].map(p=>({id:p.id,name:p.name,score:p.roundWins||0,kills:p.kills||0,deaths:p.deaths||0})), ...extra});
+}
+function clearDuelTimer(room) { clearTimeout(room.duelTimer); room.duelTimer = null; }
+function prepareDuelRound(room, fresh = false) {
+  if (room.players.size !== 2 || [...room.players.values()].some(p=>!p.ready)) return;
+  clearDuelTimer(room);
+  if (fresh) { room.round=1; for(const p of room.players.values()){p.roundWins=0;p.kills=0;p.deaths=0;} }
+  room.phase='preparing'; room.roundToken=(room.roundToken||0)+1;
+  room.rematchVotes=new Set();
+  for(const p of room.players.values()) {
+    clearTimeout(p.respawnTimer); p.loadedRound=0;p.alive=false;
+    p.orbs=[];p.fields=[];p.landTarget=0;p.cleetus=false;
+    p.lastLandBlast=p.lastBurstAt=p.lastOrbAt=p.hammerAt=p.beeAt=p.appleAt=p.lastHoney=p.honeyAt=-Infinity;
+    p.hammerHit=new Set();p.beeHit=new Set();p.grabs=new Map();p.zoneTicks=new Map();p.dmgBoostUntil=0;
+    p.nextBaldingAt=0;p.hits={};
+    respawn(p);
+  }
+  for(const p of room.players.values())p.alive=false;
+  duelState(room,{token:room.roundToken});
+}
+function finishDuelRound(room, winner) {
+  if(room.phase!=='active')return;
+  winner.roundWins=(winner.roundWins||0)+1;
+  for(const p of room.players.values()){p.orbs=[];p.fields=[];p.landTarget=0;}
+  if(winner.roundWins>=2){room.phase='finished';duelState(room,{winner:winner.id});}
+  else {
+    room.phase='intermission';duelState(room,{winner:winner.id});
+    room.duelTimer=setTimeout(()=>{room.round++;prepareDuelRound(room);},3000);
+  }
+}
+function duelMessage(p,m) {
+  const room=p.room;
+  if(m.t==='duelLoaded') {
+    if(room.phase!=='preparing'||m.token!==room.roundToken)return;
+    p.loadedRound=m.token;
+    if(room.players.size===2&&[...room.players.values()].every(q=>q.loadedRound===room.roundToken)) {
+      room.phase='countdown';const now=Date.now();room.startAt=now+3000;
+      duelState(room,{startAt:room.startAt,serverNow:now});
+      room.duelTimer=setTimeout(()=>{
+        if(room.players.size!==2||room.phase!=='countdown')return;
+        room.phase='active';for(const q of room.players.values())q.alive=true;
+        duelState(room);
+      },3000);
+    }
+  } else if(m.t==='rematch' && room.phase==='finished') {
+    if(room.players.size!==2){send(p,{t:'duelNotice',text:'Your opponent left. Choose Find Another Opponent.'});return;}
+    if(!room.rematchVotes)room.rematchVotes=new Set();room.rematchVotes.add(p.id);
+    if(room.rematchVotes.size===2)prepareDuelRound(room,true);
+    else duelState(room,{rematchVotes:[...room.rematchVotes]});
+  }
 }
 
 function updateDuelStatus(room) {
@@ -230,6 +286,13 @@ function leave(p) {
   p.room = null;
   room.players.delete(p.id);
   broadcast(room, { t: "left", id: p.id });
+  if(room.duel) {
+    clearDuelTimer(room);
+    if(room.phase && room.phase !== 'waiting' && room.phase !== 'finished') {
+      room.phase='finished';const winner=[...room.players.values()][0];
+      duelState(room,{winner:winner?.id,reason:'Opponent left the match'});
+    }
+  }
   updateDuelStatus(room);
   if (room.players.size === 0 && room.code !== "PUBLIC" && room.code !== "ROUND") rooms.delete(room.code);
 }
@@ -276,6 +339,7 @@ function siphonPlayer(room, a) {
 function hit(a, m, channelSeconds = 0, blastAuthorized = false, orbAuthorized = false) {
   if (!orbAuthorized && Date.now() < (a.stunnedUntil || 0)) return;
   const room = a.room;
+  if(room?.duel && room.phase !== "active")return;
   const rule = RULES[m.k];
   const t = room.players.get(m.target);
   if (!rule || !t || t === a) return;
@@ -374,6 +438,7 @@ function hit(a, m, channelSeconds = 0, blastAuthorized = false, orbAuthorized = 
     a.kills++;
     const how = { hammer: "banned", beam: "beam", apple: "apple", mine: "mine", hive: "hive", bee: "bee", beezone: "bee", beast: "beast", beasttick: "beast", beastend: "beast" }[m.k] || "";
     broadcast(room, { t: "kill", killer: a.id, victim: t.id, how });
+    if(room.duel){finishDuelRound(room,a);return dealt;}
     // siphon: the killer gets full health plus a 50 blue bonus shield
     if (m.k !== "cleetusorb") siphonPlayer(room, a);
     t.orbs = [];
@@ -417,6 +482,7 @@ function onMessage(p, m) {
   if (m.t === "join") return join(p, m);
   const room = p.room;
   if (!room) return;
+  if(room.duel && (m.t === "duelLoaded" || m.t === "rematch")) return duelMessage(p,m);
   const limits = mapForRoom(room).limits;
 
   if (m.t === "ready") {
@@ -436,9 +502,11 @@ function onMessage(p, m) {
     p.lastHitBy = 0;
     p.alive = true;
     p.ready = true;
-    send(p, { t: "respawn", id: p.id, char: p.char, cleetus: !!p.cleetus, x: p.x, z: p.z, hp: p.hp, max: p.max, bonus: 0 });
+    if(room.duel)p.alive=false;
+    else send(p, { t: "respawn", id: p.id, char: p.char, cleetus: !!p.cleetus, x: p.x, z: p.z, hp: p.hp, max: p.max, bonus: 0 });
     broadcast(room, { t: "joined", p: pub(p) }, p.id);
     updateDuelStatus(room);
+    if(room.duel)prepareDuelRound(room,true);
     return;
   }
 
@@ -474,6 +542,7 @@ function onMessage(p, m) {
     broadcast(room, {t:"chat", id:p.id, name:p.name, text});
     return;
   }
+  if(room.duel && (room.phase !== "active" || m.t === "switch"))return;
   if (!p.ready || !p.alive) return;
 
   if (m.t === "balding" && m.active === false) { endBalding(p); return; }
@@ -871,6 +940,7 @@ function updateCleetusOrbs(p, now) {
 setInterval(() => {
   for (const room of rooms.values()) {
     for (const p of room.players.values()) {
+      if(room.duel && room.phase !== "active")continue;
       if (p.balding && Date.now() >= p.baldingUntil) endBalding(p);
       updateLandChannel(p, Date.now());
       updateCleetusOrbs(p, Date.now());
