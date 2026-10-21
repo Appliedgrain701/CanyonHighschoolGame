@@ -1,12 +1,12 @@
 import * as THREE from "three";
 import { SERVER_URL } from "./config.js"; // your Render address lives in config.js
 
-const GAME_BUILD = 25;
+const GAME_BUILD = 26;
 // Shared arena dimensions: keep game.js and server.js in sync.
 const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
 
 const buildBadge = document.createElement("div");
-buildBadge.textContent = "GAME v25 • BOT / OFFLINE";
+buildBadge.textContent = "GAME v26 • BOT / OFFLINE";
 buildBadge.style.cssText = "position:fixed;top:5px;left:8px;z-index:10000;color:#fff;background:#111b;padding:3px 7px;font:11px sans-serif;pointer-events:none";
 document.body.appendChild(buildBadge);
 
@@ -940,7 +940,7 @@ let myName =
 
 // Asks the browser to capture the mouse (it can refuse right after Esc, so errors are ignored)
 function lockPointer() {
-  if (chatOpen || scoreboardOpen) return;
+  if (chatOpen || scoreboardOpen || !playing || (duelSession && duelSession.phase !== "active")) return;
   try {
     renderer.domElement.focus({ preventScroll: true });
   } catch (e) {}
@@ -1757,6 +1757,19 @@ mapBack.addEventListener("click", () => {
 mapOverlay.appendChild(mapBack);
 document.body.appendChild(mapOverlay);
 
+// Code-native selection illustrations: shared by bot, online, and private choices.
+function matchArtwork(duel) {
+  const person=(x,y,color,scale=1)=>`<g transform="translate(${x} ${y}) scale(${scale})"><circle cy="-30" r="16" fill="${color}"/><path d="M-28 34v-24q0-22 28-22t28 22v24" fill="${color}"/><path d="M-17 40l-8 25m42-25l8 25" stroke="${color}" stroke-width="12" stroke-linecap="round"/></g>`;
+  return `<svg viewBox="0 0 320 150" role="img" aria-label="${duel?'Two opponents facing off':'Free for all battle'}" style="display:block;width:100%;height:130px;border-radius:12px;background:linear-gradient(135deg,#18213f,#351320)"><path d="M0 130L320 35M0 45L320 140" stroke="#ffffff0d" stroke-width="20"/>${duel?person(70,70,'#60c8ff')+person(250,70,'#ff6970')+'<path d="M174 12l-34 61h24l-17 65 43-79h-29z" fill="#ffcb45"/><text x="160" y="85" text-anchor="middle" fill="white" stroke="#10172d" stroke-width="2" paint-order="stroke" font-family="Arial" font-weight="900" font-size="32">VS</text>':person(160,70,'#ffcb45')+person(65,70,'#60c8ff',.75)+person(255,70,'#ff6970',.75)+person(112,45,'#b38eff',.48)+person(208,45,'#60e6aa',.48)}</svg>`;
+}
+function setMatchCard(element,duel,title,subtitle) {
+  element.innerHTML=matchArtwork(duel);
+  element.style.cssText=BTN_STYLE+'color:white;width:min(360px,90vw);padding:12px;box-sizing:border-box;margin:8px;white-space:normal;';
+  const label=document.createElement('div');label.textContent=title;label.style.cssText='font:bold 20px Arial;margin:15px 0 8px';
+  const detail=document.createElement('div');detail.textContent=subtitle;detail.style.cssText='font:13px Arial;color:#c0cce3;line-height:1.5';
+  element.append(label,detail);
+}
+
 // Home -> match type -> map. Private rooms keep their code/invite options.
 const matchTypeOverlay = document.createElement("div");
 matchTypeOverlay.style.cssText = MENU_STYLE;
@@ -1777,7 +1790,9 @@ typeBack.addEventListener("click", () => {
   matchTypeOverlay.style.display = "none";
   modeOverlay.style.display = "flex";
 });
-matchTypeOverlay.append(matchTypeTitle, ffaChoice, duelChoice, typeBack);
+const matchCardRow=document.createElement("div");matchCardRow.style.cssText="display:flex;flex-wrap:wrap;justify-content:center;gap:12px";matchCardRow.append(ffaChoice,duelChoice);
+matchTypeOverlay.style.overflowY="auto";
+matchTypeOverlay.append(matchTypeTitle, matchCardRow, typeBack);
 document.body.appendChild(matchTypeOverlay);
 function chooseMode(kind) {
   if (!commitName()) return;
@@ -1787,8 +1802,8 @@ function chooseMode(kind) {
   stopPopulation();
   if (kind === "private") { showMapChoice(); return; }
   matchTypeTitle.textContent = MODE_NAMES[kind];
-  ffaChoice.textContent = "FREE-FOR-ALL (FFA)";
-  duelChoice.textContent = kind === "bots" ? "1v1 WITH A RANDOM BOT" : "1v1 WITH SOMEONE";
+  setMatchCard(ffaChoice,false,"FREE-FOR-ALL",kind === "bots" ? "Fight a field full of bots" : "Everyone fights everyone");
+  setMatchCard(duelChoice,true,kind === "bots" ? "1v1 WITH A RANDOM BOT" : "1v1 WITH SOMEONE","Best of 3 • First to two round wins");
   matchTypeOverlay.style.display = "flex";
 }
 function showMapChoice() {
@@ -1820,7 +1835,7 @@ privateOverlay.innerHTML = '<h1 style="margin:0 0 26px;font-size:42px;">PRIVATE 
 
 const createBtn = document.createElement("div");
 createBtn.textContent = "CREATE FREE-FOR-ALL ROOM";
-createBtn.style.cssText = BTN_STYLE;
+setMatchCard(createBtn,false,"CREATE FREE-FOR-ALL ROOM","Invite friends with a room code");
 createBtn.addEventListener("mouseenter", () => (createBtn.style.background = "#2a3a73"));
 createBtn.addEventListener("mouseleave", () => (createBtn.style.background = "#18213f"));
 createBtn.addEventListener("click", () => startOnline({ create: true }));
@@ -1881,16 +1896,16 @@ for (const [label, action] of [
   ["CREATE 1v1 ROOM — INVITE A FRIEND", () => startOnline({create:true,duel:true})],
 ]) {
   const button = document.createElement("button");
-  button.textContent = label;
-  button.style.cssText = BTN_STYLE + "margin:5px 0;font-size:17px;color:white;";
+  setMatchCard(button,true,label,"Best of 3 • Invite a friend with a room code");
   button.addEventListener("click", action);
   privateOverlay.appendChild(button);
 }
 const duelHelp = document.createElement("div");
-duelHelp.textContent = "Two players only. Respawn and keep dueling; press Tab for scores.";
+duelHelp.textContent = "Two players. Best of three. Both players start together.";
 duelHelp.style.cssText = "margin:10px 12px 24px;text-align:center;font-size:14px";
 privateOverlay.appendChild(duelHelp);
 privateOverlay.style.overflowY = "auto";
+privateOverlay.style.justifyContent="flex-start";privateOverlay.style.padding="28px 0";privateOverlay.style.boxSizing="border-box";
 privateOverlay.appendChild(createBtn);
 privateOverlay.appendChild(orText);
 privateOverlay.appendChild(joinRow);
@@ -1914,6 +1929,7 @@ statusOverlay.appendChild(statusCancel);
 document.body.appendChild(statusOverlay);
 
 function showStatus(text) {
+  if(net?.join?.matchmake || net?.join?.duel){showDuelLoading("Finding an opponent…",text);return;}
   statusText.textContent = text;
   statusOverlay.style.display = "flex";
 }
@@ -1962,7 +1978,7 @@ function showPause() {
   } else {
     pauseInfo.textContent = "Bot match" + note;
   }
-  teacherBtn.style.display = dead ? "none" : "block"; // can't switch while waiting to respawn
+  teacherBtn.style.display = dead || net?.duel || duelSession?.bot ? "none" : "block"; // can't switch while waiting to respawn
   pauseOverlay.style.display = "flex";
 }
 
@@ -2093,6 +2109,7 @@ function selectCharacter(key) {
     return;
   }
   if(mode === "online") { getAudio(); preloadRoomSound().catch(() => {}); }
+  if (inMatch && (net?.duel || duelSession?.bot)) return;
   const switching = inMatch;
   if (switching && mode === "bots") creditSwitchKill();
   lastAttacker = null;
@@ -2139,7 +2156,10 @@ function selectCharacter(key) {
       netSend({ t: "ready", char: key });
     }
   }
-  lockPointer();
+  if (net?.duel) {
+    freezeDuel();showDuelLoading(net.duelCount < 2 ? 'Finding an opponent…' : 'Waiting for your opponent to choose a character…', 'Room code: '+net.code+' • Both players will start together.');
+  } else if(duelSession?.bot)prepareBotDuel();
+  else lockPointer();
 }
 
 // Back to the mode screen from anywhere (closes the online connection too)
@@ -2175,6 +2195,7 @@ function siphon() {
 }
 
 function damagePlayer(amount, attacker) {
+  if (duelSession && duelSession.phase !== "active") return;
   if (dead) return; // Balding grants shield, not invincibility
   if (attacker && attacker.name) {
     lastAttacker = attacker; // remembered so switching teachers can credit the kill
@@ -2207,6 +2228,7 @@ function damagePlayer(amount, attacker) {
     }
     showPlayerModel();
     deathMsg.style.display = "block";
+    if(duelSession?.bot){updateHealthBar();finishBotDuelRound(false);return;}
     setTimeout(() => {
       playerHealth = maxHealth;
       bonusShield = 0;
@@ -2383,6 +2405,150 @@ function resetVoiceRoom() {
   closeScoreboard(false);speakersPanel.style.display='none';
 }
 addEventListener('blur',()=>{stopVoice();if(scoreboardOpen)closeScoreboard(false);for(const key of Object.keys(keys))keys[key]=false;mouseHeld=rightHeld=false;});
+
+// Duel presentation and local bot match lifecycle.
+let duelSession = null, duelTimer = null, duelEpoch = 0, searchAgainAt = 0, searchAgainBot = false;
+const duelScore = document.createElement('div');
+duelScore.style.cssText='position:fixed;top:56px;left:50%;transform:translateX(-50%);z-index:15;padding:12px 24px;border:2px solid #ffcb45;border-radius:12px;background:#10172dec;color:white;font:bold 18px Arial;text-align:center;display:none;pointer-events:none;white-space:pre-line';
+document.body.appendChild(duelScore);
+const duelLoading=document.createElement('div');
+duelLoading.style.cssText=MENU_STYLE+'z-index:85;display:none;';
+duelLoading.innerHTML='<style>@keyframes canyonSearch{0%,100%{transform:translate(-12px,3px) rotate(-12deg)}50%{transform:translate(12px,-3px) rotate(12deg)}}.canyon-search{animation:canyonSearch 2s ease-in-out infinite}@media(prefers-reduced-motion:reduce){.canyon-search{animation:none}}</style><div style="position:relative;width:220px;height:210px;margin-bottom:20px"><svg class="canyon-search" viewBox="0 0 220 210" width="220" height="210" aria-hidden="true"><circle cx="94" cy="85" r="58" fill="#18213f" stroke="#ffcb45" stroke-width="10"/><path d="M138 129l55 55" stroke="#c62828" stroke-width="22" stroke-linecap="round"/></svg><img src="logo.png" alt="Canyon Cougars" style="position:absolute;width:105px;height:105px;object-fit:contain;left:42px;top:31px;filter:drop-shadow(0 3px 8px #000)"></div>';
+const duelLoadingText=document.createElement('h2');duelLoadingText.style.cssText='text-align:center;max-width:650px;margin:12px;font-size:26px';
+const duelLoadingSub=document.createElement('p');duelLoadingSub.style.cssText='color:#bdc9df;text-align:center;margin:10px;max-width:650px';
+const duelCancel=document.createElement('button');duelCancel.textContent='LEAVE GAME';duelCancel.style.cssText=BTN_STYLE+'color:white;margin:24px';duelCancel.onclick=()=>goToModes();
+duelLoading.append(duelLoadingText,duelLoadingSub,duelCancel);document.body.appendChild(duelLoading);
+const duelResults=document.createElement('div');duelResults.style.cssText=MENU_STYLE+'z-index:86;display:none;';
+const duelResultTitle=document.createElement('h1');duelResultTitle.style.cssText='font-size:46px;color:#ffcb45;margin:10px';
+const duelResultStats=document.createElement('div');duelResultStats.style.cssText='font:20px Arial;white-space:pre-line;line-height:1.8;text-align:center;margin:20px';
+const duelRematch=document.createElement('button');duelRematch.textContent='REMATCH';
+const duelFind=document.createElement('button');duelFind.textContent='FIND ANOTHER OPPONENT';
+const duelLeave=document.createElement('button');duelLeave.textContent='LEAVE GAME';
+for(const b of [duelRematch,duelFind,duelLeave])b.style.cssText=BTN_STYLE+'color:white;min-width:300px;margin:7px';
+duelLeave.onclick=()=>goToModes();
+duelFind.onclick=()=>{
+  const bot=!!duelSession?.bot, map=selectedMap;
+  leaveOnline();clearBots();applyMap(map);playing=false;paused=false;
+  searchAgainBot=bot;searchAgainAt=performance.now()+20000;
+  showDuelLoading('Finding another opponent in 20…','You may be matched with the same opponent again.');
+};
+duelRematch.onclick=()=>{
+  if(!duelSession)return;
+  if(duelSession.bot){duelSession.players.forEach(p=>{p.score=0;p.kills=0;p.deaths=0;});kills=deaths=0;bots[0].kills=bots[0].deaths=0;duelSession.round=1;prepareBotDuel();}
+  else {netSend({t:'rematch'});duelRematch.disabled=true;duelRematch.textContent='WAITING FOR OPPONENT…';}
+};
+duelResults.append(duelResultTitle,duelResultStats,duelRematch,duelFind,duelLeave);document.body.appendChild(duelResults);
+function showDuelLoading(title,sub='Both players will enter together after the countdown.') {
+  duelLoadingText.textContent=title;duelLoadingSub.textContent=sub;duelLoading.style.display='flex';
+}
+function freezeDuel() {
+  playing=false;paused=false;mouseHeld=rightHeld=false;
+  for(const k in keys)keys[k]=false;
+  closeScoreboard(false);closeChat(false);stopVoice();stopLandBeam();endUlt();
+  pauseOverlay.style.display='none';overlay.style.display='none';deathMsg.style.display='none';
+  document.exitPointerLock();
+}
+function resetDuelUI() {
+  clearTimeout(duelTimer);duelEpoch++;duelSession=null;searchAgainAt=0;
+  duelLoading.style.display=duelResults.style.display=duelScore.style.display='none';
+}
+function clearDuelField() {
+  applyMap(selectedMap);clearCleetusFields();endBeast(true);
+  for(const r of remotes.values()){clearRemoteMines(r.id);if(r.landBeam)r.landBeam.visible=false;}
+  for(const b of bots)if(b.beam)b.beam.visible=false;
+  for(const rb of remoteBeasts.values())scene.remove(rb.mesh);remoteBeasts.clear();
+  for(const f of appleFx)scene.remove(f.sp);appleFx.length=0;
+}
+function resetDuelVitals() {
+  clearDuelField();setCleetusMode(false);endUlt();
+  playerHealth=maxHealth;bonusShield=ultShield=0;dead=false;
+  lastShot=lastDash=lastGrenade=lastMelee=lastLandBlast=lastCleetusShot=lastCleetusBurst=lastBee=lastHoney=-99999;
+  ultCharge=current.ultStartCharge;resetApples();dashFrames=meleeStart=0;
+  landStunUntil=slowUntil=holdUntil=honeyBoostUntil=honeyChoiceUntil=0;
+  honeyHealTicksLeft=0;
+  velY=0;lastAttacker=null;deathMsg.style.display='none';updateHealthBar();showPlayerModel();
+}
+function renderDuelScore() {
+  if(!duelSession)return;
+  const p=duelSession.players;
+  duelScore.textContent=(p[0]?.name||'You')+'  '+(p[0]?.score||0)+'  —  '+(p[1]?.score||0)+'  '+(p[1]?.name||'Opponent')+'\nBEST OF 3 • ROUND '+duelSession.round+' • FIRST TO 2';
+  duelScore.style.display='block';
+}
+function showDuelResults(winner,reason='') {
+  freezeDuel();clearDuelField();duelLoading.style.display='none';duelResults.style.display='flex';
+  const own=duelSession.bot?'self':net?.id;
+  duelResultTitle.textContent=winner===own?'VICTORY':'DEFEAT';
+  duelResultStats.textContent=(reason?reason+'\n':'')+duelSession.players.map(p=>p.name+' — '+p.score+' rounds won | '+p.kills+' kills | '+p.deaths+' deaths').join('\n');
+  duelRematch.disabled=false;duelRematch.textContent='REMATCH';
+  renderDuelScore();
+}
+function beginDuelPlay() {
+  duelLoading.style.display=duelResults.style.display='none';deathMsg.style.display='none';
+  duelSession.phase='active';playing=true;paused=false;inMatch=true;dead=false;
+  mouseHeld=rightHeld=false;justSelectedAt=performance.now();showPlayerModel();lockPointer();
+}
+function waitDuelAssets() {
+  const pictures=[current.picture,...bots.map(b=>characters[b.char]?.picture),...[...remotes.values()].map(r=>characters[r.char]?.picture)].filter(Boolean);
+  return Promise.all(pictures.map(src=>new Promise(resolve=>{const img=new Image();const timer=setTimeout(resolve,8000);img.onload=img.onerror=()=>{clearTimeout(timer);resolve();};img.src=src;}))).then(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+}
+function handleDuelState(m) {
+  const previous=duelSession?.phase;
+  duelSession={...duelSession,...m,bot:false};renderDuelScore();
+  if(m.phase==='preparing') {
+    freezeDuel();duelResults.style.display='none';resetDuelVitals();
+    kills=deaths=0;const me=m.players.find(p=>p.id===net.id);if(me){kills=me.kills;deaths=me.deaths;}updateStats();
+    showDuelLoading('Preparing round '+m.round+'…');
+    const session=net,epoch=duelEpoch;
+    waitDuelAssets().then(()=>{if(net===session&&duelEpoch===epoch&&duelSession?.token===m.token)netSend({t:'duelLoaded',token:m.token});});
+  } else if(m.phase==='countdown') {
+    duelSession.countdownEnd=performance.now()+Math.max(0,m.startAt-m.serverNow);
+    showDuelLoading('Both players ready — 3');
+  } else if(m.phase==='active')beginDuelPlay();
+  else if(m.phase==='intermission') {
+    freezeDuel();clearDuelField();showDuelLoading((m.players.find(p=>p.id===m.winner)?.name||'Opponent')+' wins the round','Next round starts shortly.');
+  } else if(m.phase==='finished') {
+    if(previous!=='finished')showDuelResults(m.winner,m.reason);
+    if(m.rematchVotes) {
+      duelRematch.disabled=m.rematchVotes.includes(net.id);
+      duelRematch.textContent=duelRematch.disabled?'WAITING FOR OPPONENT…':'OPPONENT WANTS A REMATCH';
+    }
+  }
+}
+function prepareBotDuel() {
+  clearTimeout(duelTimer);freezeDuel();resetDuelVitals();duelResults.style.display='none';
+  const spawn=pickSpawn();player.position.set(spawn[0],1,spawn[1]);respawnBot(bots[0]);
+  const far=SPAWNS.reduce((best,s)=>Math.hypot(s[0]-spawn[0],s[1]-spawn[1])>Math.hypot(best[0]-spawn[0],best[1]-spawn[1])?s:best,SPAWNS[0]);
+  bots[0].mesh.position.set(far[0],1,far[1]);yaw=Math.atan2(spawn[0]-far[0],spawn[1]-far[1]);pitch=0;
+  duelSession.phase='preparing';renderDuelScore();showDuelLoading('Preparing round '+duelSession.round+'…');
+  const epoch=duelEpoch;
+  waitDuelAssets().then(()=>{
+    if(epoch!==duelEpoch||!duelSession?.bot)return;
+    duelSession.phase='countdown';duelSession.countdownEnd=performance.now()+3000;
+    showDuelLoading('Both players ready — 3','Best of three against '+bots[0].name);
+    duelTimer=setTimeout(()=>{if(epoch===duelEpoch&&duelSession?.bot)beginDuelPlay();},3000);
+  });
+}
+
+function finishBotDuelRound(playerWon) {
+  if(!duelSession?.bot||duelSession.phase!=='active')return;
+  const winner=duelSession.players[playerWon?0:1];winner.score++;
+  duelSession.players[0].kills=kills;duelSession.players[0].deaths=deaths;
+  duelSession.players[1].kills=bots[0].kills;duelSession.players[1].deaths=bots[0].deaths||0;
+  freezeDuel();renderDuelScore();
+  if(winner.score>=2){duelSession.phase='finished';const epoch=duelEpoch;queueMicrotask(()=>{if(epoch===duelEpoch)showDuelResults(winner.id);});}
+  else {
+    duelSession.phase='intermission';showDuelLoading(winner.name+' wins the round','Next round starts shortly.');
+    const epoch=duelEpoch;duelTimer=setTimeout(()=>{if(epoch===duelEpoch&&duelSession?.bot){duelSession.round++;prepareBotDuel();}},3000);
+  }
+}
+function updateDuelScreen(now) {
+  if(searchAgainAt) {
+    const left=Math.max(0,Math.ceil((searchAgainAt-now)/1000));duelLoadingText.textContent='Finding another opponent in '+left+'…';
+    if(now>=searchAgainAt){const bot=searchAgainBot;searchAgainAt=0;duelLoading.style.display='none';if(bot)startBotMode(true);else startOnline({matchmake:true});}
+  } else if(duelSession?.phase==='countdown') {
+    duelLoadingText.textContent='Round '+duelSession.round+' starts in '+Math.max(1,Math.ceil((duelSession.countdownEnd-now)/1000));
+  }
+}
 
 // ================= INPUT =================
 const keys = {};
@@ -2654,6 +2820,7 @@ function respawnBot(bot) {
   bot.mesh.position.set(s[0], 1, s[1]);
   bot.health = bot.maxHealth || BOT_HEALTH;
   bot.applesLeft = characters.applebee.apples;
+  bot.slowUntil=bot.stunnedUntil=0;bot.held=false;
   bot.alive = true;
   bot.mesh.visible = true;
   bot.target = null;
@@ -2673,10 +2840,13 @@ function clearBots() {
 
 function startBotMode(duel = false) {
   leaveOnline();
-  buildBadge.textContent = "GAME v25 • " + (selectedMap === "roundabout" ? "ROUNDABOUT" : "STADIUM") + " • BOTS";
+  buildBadge.textContent = "GAME v26 • " + (selectedMap === "roundabout" ? "ROUNDABOUT" : "STADIUM") + " • BOTS";
   clearBots();
   for (let i = 0; i < (duel ? 1 : BOT_COUNT); i++) makeBot(i, duel ? randomBotCharacter() : null);
-  if (duel) buildBadge.textContent += " • 1v1 vs " + bots[0].name;
+  if (duel) {
+    buildBadge.textContent += " • 1v1 vs " + bots[0].name;
+    duelSession={bot:true,phase:'selecting',round:1,players:[{id:'self',name:myName,score:0,kills:0,deaths:0},{id:'bot',name:bots[0].name,score:0,kills:0,deaths:0}]};
+  }
   privateOverlay.style.display = "none";
   kills = 0;
   deaths = 0;
@@ -2721,6 +2891,7 @@ function isAlive(e) {
 
 // attacker = "player", a bot, or nothing. how = "banned", "beam", or nothing.
 function damageBot(bot, amount, how, attacker) {
+  if (duelSession?.bot && duelSession.phase !== "active") return;
   if (!bot.alive) return;
   if (how !== "cleetusorb" && how !== "cleetusfield" && attacker === "player" && current.kind === "applebee" && honeyBoostUntil > performance.now()) amount *= 1 + HONEY.boostPct; // the bees' +20%
   const dealt = Math.min(amount, bot.health);
@@ -2749,6 +2920,7 @@ function damageBot(bot, amount, how, attacker) {
       addFeed(attacker.name, bot.name, how);
     }
     updateStats();
+    if(duelSession?.bot)finishBotDuelRound(true);
   }
   drawTag(bot);
 }
@@ -3174,6 +3346,7 @@ function updateRemotes(dt, now) {
 }
 
 function leaveOnline() {
+  resetDuelUI();
   resetVoiceRoom();
   stopRoomSound();
   setCleetusMode(false); clearCleetusOrbs();
@@ -3297,20 +3470,25 @@ function handleNet(m) {
     case "chatNotice":
       addChatMessage("System", m.text);
       return;
+    case "duelState": handleDuelState(m); return;
+    case "duelNotice": duelRematch.disabled=false;duelRematch.textContent=m.text;return;
     case "duelStatus":
       net.duelCount = m.count; net.duelReady = m.ready; updateRoomHud();
+      if(net.duel && net.ready && (!duelSession || duelSession.phase === 'waiting'))showDuelLoading(m.count<2?'Finding an opponent…':'Waiting for your opponent to choose a character…','Room code: '+net.code+' • Both players start together.');
       return;
     case "welcome": {
       if (m.v !== GAME_BUILD) {
-        buildBadge.textContent = "GAME v25 / SERVER v" + m.v + " — UPDATE BOTH FILES";
-        failOnline("Version mismatch: game v25 needs server v25. Replace both files and restart the server, then refresh the game.");
+        buildBadge.textContent = "GAME v26 / SERVER v" + m.v + " — UPDATE BOTH FILES";
+        failOnline("Version mismatch: game v26 needs server v26. Replace both files and restart the server, then refresh the game.");
         return;
       }
-      buildBadge.textContent = "GAME v25 / SERVER v25 • " + (m.map === "roundabout" ? "ROUNDABOUT" : "STADIUM");
+      buildBadge.textContent = "GAME v26 / SERVER v26 • " + (m.map === "roundabout" ? "ROUNDABOUT" : "STADIUM");
       applyMap(m.map || "football");
       net.id = m.id;
       net.code = m.code;
       net.duel = !!m.duel; net.duelCount = 1; net.duelReady = 0;
+      if(net.duel)duelSession={bot:false,phase:"waiting",round:1,players:[]};
+      duelLoading.style.display="none";
       for (const p of m.players) addRemote(p);
       statusOverlay.style.display = "none";
       inMatch = false;
@@ -3417,7 +3595,7 @@ function handleNet(m) {
         setCleetusMode(m.char === "land" && !!m.cleetus);
         landStunUntil = 0;
         player.position.set(m.x, 1, m.z);
-        if (selectedMap === "roundabout") { yaw = Math.atan2(m.x, m.z); pitch = 0; }
+        if (selectedMap === "roundabout" || net.duel) { yaw = Math.atan2(m.x, m.z); pitch = 0; }
         playerHealth = m.hp;
         bonusShield = m.bonus || 0;
         ultShield = m.ultShield || 0;
@@ -5400,7 +5578,7 @@ const ICON = {
   mine: '<circle cx="12" cy="13" r="4.5"/><path d="M12 3v3M12 20v3M3 13h3M18 13h3M6 7l2 2M16 17l2 2M18 7l-2 2M8 17l-2 2"/>',
   hive: '<ellipse cx="12" cy="7" rx="4" ry="2.5"/><ellipse cx="12" cy="12" rx="6" ry="3"/><ellipse cx="12" cy="17.5" rx="5" ry="3"/>',
   bee: '<ellipse cx="12" cy="14" rx="5" ry="6"/><path d="M7 6c-3-3-5 2-2 4M17 6c3-3 5 2 2 4M9 11h6M9 15h6"/>',
-  honey: '<path d="M12 3l7 9-7 9-7-9z"/><path d="M12 3v25"/>',
+  honey: '<path d="M12 3l7 9-7 9-7-9z"/><path d="M12 3v26"/>',
   sun: '<circle cx="12" cy="12" r="5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
   camera: '<path d="M3 8h4l2-3h6l2 3h4v11H3z"/><circle cx="12" cy="13" r="3.5"/>',
   wheel: '<rect x="7" y="2" width="10" height="20" rx="5"/><path d="M12 6v4"/>',
@@ -5720,6 +5898,7 @@ function animate() {
   const now = performance.now();
   const dt = Math.min(0.1, (now - lastFrame) / 1000);
   lastFrame = now;
+  updateDuelScreen(now);
 
   // Ult charges up just by playing
   if (playing && !dead && ultPhase === 0) addUltCharge(current.ultPassivePerSec * dt);
