@@ -2,7 +2,7 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const SERVER_VERSION = 23; // protocol version; differing versions do not imply a stale deployment
+const SERVER_VERSION = 24; // protocol version; differing versions do not imply a stale deployment
 // Shared arena dimensions: keep game.js and server.js in sync.
 const MAP = { halfX: 74, halfZ: 88, limitX: 72, limitZ: 86 };
 // Shared procedural Roundabout geometry. X=east, Z=south; north is -Z.
@@ -158,7 +158,7 @@ function num(v, lo, hi, d) {
   return Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : d;
 }
 function pub(p) {
-  return { id: p.id, name: p.name, char: p.char, y: p.y, x: p.x, z: p.z, yaw: p.yaw, hp: p.hp, max: p.max, alive: p.alive, bonus: p.bonus || 0, ultShield: p.ultShield || 0, balding: !!p.balding, sprint: !!p.sprint, cleetus: !!p.cleetus };
+  return { id: p.id, name: p.name, kills:p.kills||0, deaths:p.deaths||0, char: p.char, y: p.y, x: p.x, z: p.z, yaw: p.yaw, hp: p.hp, max: p.max, alive: p.alive, bonus: p.bonus || 0, ultShield: p.ultShield || 0, balding: !!p.balding, sprint: !!p.sprint, cleetus: !!p.cleetus };
 }
 
 function pickSpawn(room) {
@@ -555,7 +555,7 @@ wss.on("connection", (ws) => {
   ws.on("message", (raw, isBinary) => {
     if (isBinary) {
       // voice chat: a raw 16kHz mono PCM chunk from push-to-talk, relayed to everyone else in the room
-      if (raw.length > 4000 || !p.room || !p.ready) return;
+      if (raw.length < 2 || raw.length % 2 !== 0 || raw.length > 4000 || !p.room || !p.ready) return;
       const packet = Buffer.allocUnsafe(4 + raw.length);
       packet.writeUInt32LE(p.id, 0);
       raw.copy(packet, 4);
@@ -868,6 +868,10 @@ setInterval(() => {
     for (const p of room.players.values()) for (const o of p.orbs || []) orbs.push({id:o.id,owner:o.owner,kind:o.kind,x:o.x,y:o.y,z:o.z});
     if (orbs.length || fields.length || room.hadOrbs) broadcast(room, {t:"orbs", orbs, fields});
     room.hadOrbs = orbs.length + fields.length > 0;
+    if (Date.now() - (room.scoreboardAt || 0) >= 500) {
+      room.scoreboardAt=Date.now();
+      broadcast(room,{t:'scoreboard',players:[...room.players.values()].filter(p=>p.ready).map(p=>({id:p.id,name:p.name,kills:p.kills||0,deaths:p.deaths||0}))});
+    }
     if (room.players.size < 2) continue;
     const list = [];
     for (const p of room.players.values()) {
