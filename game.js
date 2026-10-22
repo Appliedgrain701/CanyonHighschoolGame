@@ -2945,10 +2945,16 @@ function botShoot(bot, dx, dz) {
   const c = Math.cos(e);
   const s = Math.sin(e);
   const dir = new THREE.Vector3(dx * c - dz * s, 0, dx * s + dz * c);
-  const b = new THREE.Mesh(enemyBulletGeo, bot.bulletMat);
+  const isPhone = bot.char === "mahoney";
+  const b = new THREE.Mesh(isPhone ? phoneGeo : enemyBulletGeo, isPhone ? phoneMat : bot.bulletMat);
+  if (isPhone) {
+    b.scale.set(PHONE_SIZE * phoneAspect, PHONE_SIZE, 1);
+    b.quaternion.copy(camera.quaternion);
+    playAbilitySound("phone", bot.mesh.position, bot.name);
+  }
   const p = bot.mesh.position;
   b.position.set(p.x + dir.x * 0.8, 1.5, p.z + dir.z * 0.8);
-  b.userData = { dir, life: 130, owner: bot, damage: bot.char === "mahoney" ? characters.mahoney.damage : BOT_DAMAGE };
+  b.userData = { dir, life: 130, owner: bot, phone: isPhone, spin: 0, damage: bot.char === "mahoney" ? characters.mahoney.damage : BOT_DAMAGE };
   scene.add(b);
   enemyBullets.push(b);
 }
@@ -6179,6 +6185,13 @@ function animate() {
   for (let i = enemyBullets.length - 1; i >= 0; i--) {
     const eb = enemyBullets[i];
     eb.position.addScaledVector(eb.userData.dir, BOT_BULLET_SPEED);
+    if (eb.userData.phone) {
+      // Face the camera so the phone stays readable in first and third person.
+      eb.scale.set(PHONE_SIZE * phoneAspect, PHONE_SIZE, 1);
+      eb.quaternion.copy(camera.quaternion);
+      eb.userData.spin += PHONE_SPIN * dt * 60;
+      eb.rotateZ(eb.userData.spin);
+    }
 
     let used = false;
     if (playing && !dead && eb.position.distanceTo(player.position) < 1.2) {
