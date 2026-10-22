@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { SERVER_URL } from "./config.js"; // your Render address lives in config.js
+import { SERVER_URL } from "./config.js?v=render-pss1"; // your Render address lives in config.js
 
 const GAME_BUILD = 26;
 // Shared arena dimensions: keep game.js and server.js in sync.
